@@ -68,11 +68,19 @@ struct WilsonImplParams {
 struct StaggeredImplParams {
   Coordinate dirichlet; // Blocksize of dirichlet BCs
   int  partialDirichlet;
-  StaggeredImplParams()
-  {
-    partialDirichlet=0;
-    dirichlet.resize(0);
-  };
+  AcceleratorVector<Complex, Nd> boundary_phases;
+
+  std::vector<Complex> standardBCs() { 
+    std::vector<Complex> phases(Nd, 1.0);
+    phases[Nd-1] = -1.0; // anti-periodic in time
+    return phases; 
+  }
+  
+  StaggeredImplParams(std::vector<Complex> phi): boundary_phases(phi)
+  { partialDirichlet = 0; dirichlet.resize(0); };
+
+  StaggeredImplParams(): boundary_phases(standardBCs())
+  { partialDirichlet = 0; dirichlet.resize(0); };
 };
   
   struct OneFlavourRationalParams : Serializable {
