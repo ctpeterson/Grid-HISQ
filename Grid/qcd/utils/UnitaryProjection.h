@@ -66,8 +66,9 @@ public: INHERIT_GIMPL_TYPES(Gimpl);
 private:
   typedef typename Simd::scalar_type GridScalar;
   typedef iScalar<iScalar<iMatrix<GridScalar, Nc>>> GridScalarMatrix;
-  
-  typedef typename Eigen::Matrix<ComplexD, Nc, Nc> EigenScalarMatrix;
+
+  // it is important for GPU build of Grid that this is std::complex
+  typedef typename Eigen::Matrix<std::complex<double>, Nc, Nc> EigenScalarMatrix;
   typedef typename Eigen::JacobiSVD<EigenScalarMatrix> EigenSVD;
 
   RealD cutoff, svdtol;
@@ -87,7 +88,7 @@ private:
     for (int i = 0; i < Nc; ++i) {
       for (int j = 0; j < Nc; ++j) {
         GridScalar uij = u()()(i, j);
-        eu(i, j) = ComplexD(real(uij), imag(uij));
+        eu(i, j) = std::complex<double>(real(uij), imag(uij));
     } }
     return eu;
   }
@@ -251,11 +252,15 @@ private:
     if (backupSVD) {{
       autoView(detA_v, detA, CpuRead);
       autoView(detB_v, detB, CpuRead);
+
       autoView(u_v, u, CpuRead);
+
       autoView(e0_v, e0, CpuRead);
       autoView(e1_v, e1, CpuRead);
       autoView(e2_v, e2, CpuRead);
+
       autoView(v_v, v, CpuWrite);
+
       thread_for(n, grid->lSites(), { // TODO: mask
         bool detDiffTooLarge, e0TooSmall, e1TooSmall, e2TooSmall;
         Coordinate lcoor;
@@ -263,14 +268,17 @@ private:
         GridScalar locale0, locale1, locale2;
 
         grid->LocalIndexToLocalCoor(n, lcoor);
-        peekLocalSite(localDetA, detA_v, lcoor);
+
+	peekLocalSite(localDetA, detA_v, lcoor);
         peekLocalSite(localDetB, detB_v, lcoor);
-        peekLocalSite(locale0, e0_v, lcoor);
+
+	peekLocalSite(locale0, e0_v, lcoor);
         peekLocalSite(locale1, e1_v, lcoor);
         peekLocalSite(locale2, e2_v, lcoor);
 
         detDiffTooLarge = abs(localDetA - localDetB) > svdtol;
-        e0TooSmall = abs(locale0) < svdtol;
+
+	e0TooSmall = abs(locale0) < svdtol;
         e1TooSmall = abs(locale1) < svdtol;
         e2TooSmall = abs(locale2) < svdtol;
 

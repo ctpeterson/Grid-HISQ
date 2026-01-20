@@ -89,9 +89,10 @@ class Transporter: public Gimpl {
  * link constructs. 
  */
 public: INHERIT_GIMPL_TYPES(Gimpl)
-
+  
 private:
   int depth, mu;
+  
   std::shared_ptr<GeneralLocalStencil> _stencil;
   std::unique_ptr<GaugeLinkField> _link;
 
@@ -108,12 +109,14 @@ public:
   ): mu(mu), depth(depth) {
     GridCartesian* cgrid = (GridCartesian*)grid;
     std::vector<Coordinate> shifts;
+    Coordinate noshift(Nd, 0);
     Coordinate backward(Nd, 0);
     Coordinate forward(Nd, 0);
 
     backward[mu] = -depth;
     forward[mu] = depth;
 
+    shifts.push_back(noshift);
     shifts.push_back(backward);
     shifts.push_back(forward);
 
@@ -215,33 +218,10 @@ public:
     for (int mu = 0; mu < Nd; ++mu) 
       _transporter[mu] = Transporter<Gimpl>(_pgrid, toLink(U, mu), mu, depth);
 
-    createMuStencil(depth);
     createMuNuStencils(depth);
   }
 
 private:
-  void createMuStencil(int depth) {
-    GridCartesian* cgrid = (GridCartesian*)_pgrid;
-
-    std::vector<Coordinate> shifts;
-
-    for (int mu = 0; mu < Nd; ++mu)
-      for (int d = 0; d < depth; ++d) { 
-        Coordinate forward(Nd, 0); 
-        forward[mu] = d + 1; 
-        shifts.push_back(forward); 
-      }
-    
-    for (int mu = 0; mu < Nd; ++mu)
-      for (int d = 0; d < depth; ++d) {
-        Coordinate backward(Nd, 0);
-        backward[mu] = -(d + 1);
-        shifts.push_back(backward);
-      }
-
-    _stencil = std::make_shared<GeneralLocalStencil>(GeneralLocalStencil(cgrid, shifts));
-  }
-
   void createMuNuStencils(int depth) {
     GridCartesian* cgrid = (GridCartesian*)_pgrid;
 
@@ -259,17 +239,19 @@ private:
         Coordinate shift_pmu_mnu(Nd, 0);
         Coordinate shift_mmu_pnu(Nd, 0);
         Coordinate shift_mmu_mnu(Nd, 0);
+	Coordinate shift0(Nd, 0);
 
         shift_pmu_pnu[mu] = depth;   shift_pmu_pnu[nu] = depth;
         shift_pmu_mnu[mu] = depth;   shift_pmu_mnu[nu] = -depth;
         shift_mmu_pnu[mu] = -depth;  shift_mmu_pnu[nu] = depth;
         shift_mmu_mnu[mu] = -depth;  shift_mmu_mnu[nu] = -depth;
 
+	shifts.push_back(shift0);
         shifts.push_back(shift_pmu_pnu);
         shifts.push_back(shift_pmu_mnu);
         shifts.push_back(shift_mmu_pnu);
         shifts.push_back(shift_mmu_mnu);
-
+	
         stencils.push_back(
           std::make_shared<GeneralLocalStencil>(GeneralLocalStencil(cgrid, shifts))
         );
@@ -345,9 +327,6 @@ public:
 public:
   /** @brief return copy of input buffer for transporter */
   inline const GaugeLinkField link(int mu) { return _transporter[mu].link(); }
-
-  /** @brief return copy of general local stencil */
-  inline const GeneralLocalStencil stencil() { return *_stencil; }
 
   /** @breif return copy of general local stencil from transporters */
   inline const GeneralLocalStencil stencil(int mu) 
@@ -464,12 +443,6 @@ public:
   }
 
 public:
-  inline const GaugeLinkField ident() 
-  { GaugeLinkField id(_pgrid); id = 1.0; return id; }
-
-  inline const GaugeLinkField ident(int mu) { return ident(); } // aesthetic
-
-public:
   inline const GaugeLinkField _staple(
     const GaugeLinkField& u, 
     const GaugeLinkField& v,
@@ -528,106 +501,6 @@ public:
     int nu,
     bool correct_boundaries = true
   );
-
-public:
-  inline const GaugeLinkField upperStaple(
-    const GaugeLinkField& u, // mu link
-    const GaugeLinkField& lv, // left nu link
-    const GaugeLinkField& rv, // right nu link
-    int mu,
-    int nu
-  );
-
-  inline const GaugeLinkField upperStaple(
-    const GaugeLinkField& lv, // left nu link
-    const GaugeLinkField& rv, // right nu link
-    int mu,
-    int nu
-  ) { return upperStaple(link(mu), lv, rv, mu, nu); }
-
-  inline const GaugeLinkField upperStaple(
-    const GaugeLinkField& u, // mu link
-    int mu,
-    int nu
-  ) { return upperStaple(u, link(nu), link(nu), mu, nu); }
-
-  inline const GaugeLinkField upperStaple(int mu, int nu) 
-  { return upperStaple(link(mu), link(nu), link(nu), mu, nu); }
-
-public:
-  inline const GaugeLinkField lowerStaple(
-    const GaugeLinkField& u, // mu link
-    const GaugeLinkField& lv, // left nu link
-    const GaugeLinkField& rv, // right nu link
-    int mu,
-    int nu
-  );
-
-  inline const GaugeLinkField lowerStaple(
-    const GaugeLinkField& lv, // left nu link
-    const GaugeLinkField& rv, // right nu link
-    int mu,
-    int nu
-  ) { return lowerStaple(link(mu), lv, rv, mu, nu); }
-
-  inline const GaugeLinkField lowerStaple(
-    const GaugeLinkField& u, // mu link
-    int mu,
-    int nu
-  ) { return lowerStaple(u, link(nu), link(nu), mu, nu); }
-
-  inline const GaugeLinkField lowerStaple(int mu, int nu) 
-  { return lowerStaple(link(mu), link(nu), link(nu), mu, nu); }
-
-public:
-  inline const GaugeLinkField rightStaple(
-    const GaugeLinkField& u, // nu link
-    const GaugeLinkField& rv, // top mu link
-    const GaugeLinkField& bv, // bottom mu link
-    int mu,
-    int nu
-  );
-
-  inline const GaugeLinkField rightStaple(
-    const GaugeLinkField& rv, // top mu link
-    const GaugeLinkField& bv, // bottom mu link
-    int mu,
-    int nu
-  ) { return rightStaple(link(nu), rv, bv, mu, nu); }
-
-  inline const GaugeLinkField rightStaple(
-    const GaugeLinkField& u, // nu link
-    int mu,
-    int nu
-  ) { return rightStaple(u, link(mu), link(mu), mu, nu); }
-
-  inline const GaugeLinkField rightStaple(int mu, int nu) 
-  { return rightStaple(link(nu), link(mu), link(mu), mu, nu); }
-
-public:
-  inline const GaugeLinkField leftStaple(
-    const GaugeLinkField& u, // nu link
-    const GaugeLinkField& rv, // top mu link
-    const GaugeLinkField& bv, // bottom mu link
-    int mu,
-    int nu
-  );
-
-  inline const GaugeLinkField leftStaple(
-    const GaugeLinkField& rv, // top mu link
-    const GaugeLinkField& bv, // bottom mu link
-    int mu,
-    int nu
-  ) { return leftStaple(link(nu), rv, bv, mu, nu); }
-
-  inline const GaugeLinkField leftStaple(
-    const GaugeLinkField& u, // nu link
-    int mu,
-    int nu
-  ) { return leftStaple(u, link(mu), link(mu), mu, nu); }
-
-  inline const GaugeLinkField leftStaple(int mu, int nu) 
-  { return leftStaple(link(nu), link(mu), link(mu), mu, nu); }
 };
 
 //
@@ -644,7 +517,8 @@ IMPL(Transporter)::CovShift(
 ) {
   bool forward = heading == FORWARD;
   int direction = forward ? 1 : 0;
-  GaugeLinkField f(u.Grid());
+  auto* pgrid = u.Grid();
+  GaugeLinkField f(pgrid);
 
   ACCELERATOR_SCOPE(
     GeneralLocalStencilView s_v = stencil().View(AcceleratorRead);
@@ -653,10 +527,13 @@ IMPL(Transporter)::CovShift(
     autoView(f_v, f, AcceleratorWrite);
 
     // no overhead from branching inside accelerator loop bc heading constant
-    accelerator_for(n, f_v.size(), Simd::Nsimd(), {
-      STENCIL_ENTRY(se, s_v, direction, n);
-      if (forward) ACCWRITE(f_v[n], u_v[n]*ACCREAD(v_v, se));
-      else ACCWRITE(f_v[n], adj(ACCREAD(u_v, se))*ACCREAD(v_v, se));
+    accelerator_for(n, pgrid->oSites(), pgrid->Nsimd(), {
+      STENCIL_ENTRY(se_mu, s_v, direction + 1, n);
+      if (forward) {
+	STENCIL_ENTRY(se_0, s_v, 0, n);
+	ACCWRITE(f_v[n], ACCREAD(u_v, se_0)*ACCREAD(v_v, se_mu));
+      }
+      else ACCWRITE(f_v[n], adj(ACCREAD(u_v, se_mu))*ACCREAD(v_v, se_mu));
     });
   )
 
@@ -697,15 +574,16 @@ IMPL(Transporter)::CovShiftBck()
 IMPL(Transporter)::Cshift(const GaugeLinkField& u, TransportHeading heading) {
   bool forward = heading == FORWARD;
   int direction = forward ? 1 : 0;
-  GaugeLinkField f(u.Grid());
+  auto* pgrid = u.Grid();
+  GaugeLinkField f(pgrid);
 
   ACCELERATOR_SCOPE(
     GeneralLocalStencilView s_v = stencil().View(AcceleratorRead);
     autoView(u_v, u, AcceleratorRead);
     autoView(f_v, f, AcceleratorWrite);
 
-    accelerator_for(n, f_v.size(), Simd::Nsimd(), {
-      STENCIL_ENTRY(se, s_v, direction, n); 
+    accelerator_for(n, pgrid->oSites(), pgrid->Nsimd(), {
+      STENCIL_ENTRY(se, s_v, direction + 1, n); 
       ACCWRITE(f_v[n], ACCREAD(u_v, se));
     });
   )
@@ -762,23 +640,25 @@ IMPL(Transporters)::_staple(
     autoView(v_v, v, AcceleratorRead);
     autoView(rs_v, rs, AcceleratorWrite);
 
-    accelerator_for(n, _pgrid->oSites(), Simd::Nsimd(), {
+    accelerator_for(n, _pgrid->oSites(), _pgrid->Nsimd(), {
       STENCIL_ENTRY(se_pmu, smu_v, 1, n);
       STENCIL_ENTRY(se_mnu, snu_v, 0, n);
       STENCIL_ENTRY(se_pnu, snu_v, 1, n);
-      STENCIL_ENTRY(se_pmu_mnu, smunu_v, 1, n);
-
+      STENCIL_ENTRY(se_0, smunu_v, 0, n);
+      STENCIL_ENTRY(se_pmu_mnu, smunu_v, 2, n);
+      
       // upper staple
+      auto v_x = ACCREAD(v_v, se_0);
       auto u_xpnu = ACCREAD(u_v, se_pnu);
       auto v_xpmu = ACCREAD(v_v, se_pmu);
-      auto staple = v_v[n]*u_xpnu*adj(v_xpmu);
+      auto staple = v_x*u_xpnu*adj(v_xpmu);
 
       // lower staple
       auto v_xmnu = ACCREAD(v_v, se_mnu);
       auto u_xmnu = ACCREAD(u_v, se_mnu);
       auto v_xmnu_pmu = ACCREAD(v_v, se_pmu_mnu);
       staple = staple + adj(v_xmnu)*u_xmnu*v_xmnu_pmu;
-
+      
       // full result
       ACCWRITE(rs_v[n], staple);
     });
@@ -813,154 +693,6 @@ IMPL(Transporters)::staple(
 IMPL(Transporters)::staple(int mu, int nu, bool correct_boundaries) { 
   if (correct_boundaries) return exchange(_staple(link(mu), link(nu), mu, nu)); 
   else return _staple(link(mu), link(nu), mu, nu); 
-}
-
-//-- upper staple --//
-
-IMPL(Transporters)::upperStaple(
-  const GaugeLinkField& u, // mu link
-  const GaugeLinkField& lv, // left nu link
-  const GaugeLinkField& rv, // right nu link
-  int mu,
-  int nu
-) {
-  /**
-   * @brief Calculates upper staple only
-   * @author Curtis Taylor Peterson
-   * @details
-   * Calculates upper staple only with orientation
-   * ν      ---🠢
-   * 🠡      🠡   🠣
-   * -🠢 μ  x
-   */ 
-  GaugeLinkField us(_pgrid);
-
-  ACCELERATOR_SCOPE(
-    GeneralLocalStencilView s_v = stencil().View(AcceleratorRead);
-    autoView(u_v, u, AcceleratorRead);
-    autoView(lv_v, lv, AcceleratorRead);
-    autoView(rv_v, rv, AcceleratorRead);
-    autoView(us_v, us, AcceleratorWrite);
-
-    accelerator_for(n, us_v.size(), Simd::Nsimd(), {
-      STENCIL_ENTRY(se_mu, s_v, mu, n);
-      STENCIL_ENTRY(se_nu, s_v, nu, n);
-      ACCWRITE(us_v[n], lv_v[n]*ACCREAD(u_v, se_nu)*adj(ACCREAD(rv_v, se_mu)));
-    });
-  )
-
-  return exchange(us);
-}
-
-//-- lower staple --//
-
-IMPL(Transporters)::lowerStaple(
-  const GaugeLinkField& u, // mu link
-  const GaugeLinkField& lv, // left nu link
-  const GaugeLinkField& rv, // right nu link
-  int mu,
-  int nu
-) {
-  /**
-   * @brief Calculates lower staple only
-   * @author Curtis Taylor Peterson
-   * @details
-   * Calculates lower staple only with orientation
-   * ν      x
-   * 🠡      🠣   🠡
-   * -🠢 μ   ---🠢 
-   */ 
-  GaugeLinkField ls(_pgrid);
-
-  ACCELERATOR_SCOPE(
-    GeneralLocalStencilView s_v = stencil().View(AcceleratorRead);
-    autoView(u_v, u, AcceleratorRead);
-    autoView(lv_v, lv, AcceleratorRead);
-    autoView(rv_v, rv, AcceleratorRead);
-    autoView(ls_v, ls, AcceleratorWrite);
-
-    accelerator_for(n, ls_v.size(), Simd::Nsimd(), {
-      STENCIL_ENTRY(se, s_v, mu, n);
-      ACCWRITE(ls_v[n], adj(lv_v[n])*u_v[n]*ACCREAD(rv_v, se));
-    });
-  )
-
-  return CovShiftIdentBck(nu, exchange(ls));
-}
-
-//-- right staple --//
-
-IMPL(Transporters)::rightStaple(
-  const GaugeLinkField& u, // nu link
-  const GaugeLinkField& rv, // top mu link
-  const GaugeLinkField& bv, // bottom mu link
-  int mu,
-  int nu
-) {
-  /**
-   * @brief Calculates right staple only
-   * @author Curtis Taylor Peterson
-   * @details
-   * Calculates right staple only with orientation
-   *       🠤----      
-   * ν          🠡
-   * 🠡   x ----🠢      
-   * -🠢 μ    
-   */ 
-  GaugeLinkField rs(_pgrid);
-
-  ACCELERATOR_SCOPE(
-    GeneralLocalStencilView s_v = stencil().View(AcceleratorRead);
-    autoView(u_v, u, AcceleratorRead);
-    autoView(rv_v, rv, AcceleratorRead);
-    autoView(bv_v, bv, AcceleratorRead);
-    autoView(rs_v, rs, AcceleratorWrite);
-
-    accelerator_for(n, rs_v.size(), Simd::Nsimd(), {
-      STENCIL_ENTRY(se_mu, s_v, mu, n);
-      STENCIL_ENTRY(se_nu, s_v, nu, n);
-      ACCWRITE(rs_v[n], bv_v[n]*ACCREAD(u_v, se_mu)*adj(ACCREAD(rv_v, se_nu)));
-    });
-  )
-
-  return exchange(rs);
-}
-
-//-- left staple --//
-
-IMPL(Transporters)::leftStaple(
-  const GaugeLinkField& u, // nu link
-  const GaugeLinkField& rv, // top mu link
-  const GaugeLinkField& bv, // bottom mu link
-  int mu,
-  int nu
-) {
-  /**
-   * @brief Calculates left staple only
-   * @author Curtis Taylor Peterson
-   * @details
-   * Calculates left staple only with orientation
-   *      ----🠢      
-   * ν    🠡
-   * 🠡    🠤---- x     
-   * -🠢 μ    
-   */ 
-  GaugeLinkField ls(_pgrid);
-
-  ACCELERATOR_SCOPE(
-    GeneralLocalStencilView s_v = stencil().View(AcceleratorRead);
-    autoView(u_v, u, AcceleratorRead);
-    autoView(rv_v, rv, AcceleratorRead);
-    autoView(bv_v, bv, AcceleratorRead);
-    autoView(ls_v, ls, AcceleratorWrite);
-
-    accelerator_for(n, ls_v.size(), Simd::Nsimd(), {
-      STENCIL_ENTRY(se, s_v, nu, n);
-      ACCWRITE(ls_v[n], adj(bv_v[n])*u_v[n]*ACCREAD(rv_v, se));
-    });
-  )
-
-  return CovShiftIdentBck(mu, exchange(ls));
 }
 
 //-- symmetric staple derivative --//
@@ -1000,16 +732,18 @@ IMPL(Transporters)::_stapleDerivative(
     autoView(c_v, c, AcceleratorRead);
     autoView(rds_v, rds, AcceleratorWrite);
 
-    accelerator_for(n, _pgrid->oSites(), Simd::Nsimd(), {
+    accelerator_for(n, _pgrid->oSites(), _pgrid->Nsimd(), {
       STENCIL_ENTRY(se_pmu, smu_v, 1, n);
       STENCIL_ENTRY(se_mnu, snu_v, 0, n);
       STENCIL_ENTRY(se_pnu, snu_v, 1, n);
-      STENCIL_ENTRY(se_pmu_mnu, smunu_v, 1, n);
+      STENCIL_ENTRY(se_0, smunu_v, 0, n);
+      STENCIL_ENTRY(se_pmu_mnu, smunu_v, 2, n);
 
       // left: upper staple
+      auto c_x = ACCREAD(c_v, se_0);
       auto u_xpnu = ACCREAD(u_v, se_pnu);
       auto v_xpmu = ACCREAD(v_v, se_pmu);
-      auto staple = c_v[n]*u_xpnu*adj(v_xpmu);
+      auto staple = c_x*u_xpnu*adj(v_xpmu);
 
       // left: lower staple
       auto c_xmnu = ACCREAD(c_v, se_mnu);
@@ -1018,8 +752,9 @@ IMPL(Transporters)::_stapleDerivative(
       staple = staple + adj(c_xmnu)*u_xmnu*v_xmnu_pmu;
 
       // right: upper staple
+      auto v_x = ACCREAD(v_v, se_0);
       auto c_xpmu = ACCREAD(c_v, se_pmu);
-      staple = staple + v_v[n]*u_xpnu*adj(c_xpmu);
+      staple = staple + v_x*u_xpnu*adj(c_xpmu);
 
       // right: lower staple
       auto v_xmnu = ACCREAD(v_v, se_mnu);
