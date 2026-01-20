@@ -89,10 +89,9 @@ class Transporter: public Gimpl {
  * link constructs. 
  */
 public: INHERIT_GIMPL_TYPES(Gimpl)
-  
+
 private:
   int depth, mu;
-  
   std::shared_ptr<GeneralLocalStencil> _stencil;
   std::unique_ptr<GaugeLinkField> _link;
 
@@ -109,16 +108,16 @@ public:
   ): mu(mu), depth(depth) {
     GridCartesian* cgrid = (GridCartesian*)grid;
     std::vector<Coordinate> shifts;
-    Coordinate noshift(Nd, 0);
     Coordinate backward(Nd, 0);
     Coordinate forward(Nd, 0);
+    Coordinate noshift(Nd, 0);
 
     backward[mu] = -depth;
     forward[mu] = depth;
 
-    shifts.push_back(noshift);
     shifts.push_back(backward);
     shifts.push_back(forward);
+    shifts.push_back(noshift);
 
     _stencil = std::make_unique<GeneralLocalStencil>(GeneralLocalStencil(cgrid, shifts));
     _link = std::make_unique<GaugeLinkField>(link);
@@ -213,16 +212,15 @@ public:
     auto U = pcell.ExchangePeriodic(Uin);
     std::vector<Coordinate> shifts;
 
+    // construct transporters
+    
     _pcell = &pcell;
     _pgrid = (GridBase*)_pcell->grids.back();
     for (int mu = 0; mu < Nd; ++mu) 
       _transporter[mu] = Transporter<Gimpl>(_pgrid, toLink(U, mu), mu, depth);
 
-    createMuNuStencils(depth);
-  }
-
-private:
-  void createMuNuStencils(int depth) {
+    // construct mu-nu stencils
+    
     GridCartesian* cgrid = (GridCartesian*)_pgrid;
 
     for (int mu = 0; mu < Nd; ++mu) {
@@ -239,19 +237,19 @@ private:
         Coordinate shift_pmu_mnu(Nd, 0);
         Coordinate shift_mmu_pnu(Nd, 0);
         Coordinate shift_mmu_mnu(Nd, 0);
-	Coordinate shift0(Nd, 0);
+        Coordinate shift_0(Nd, 0);
 
         shift_pmu_pnu[mu] = depth;   shift_pmu_pnu[nu] = depth;
         shift_pmu_mnu[mu] = depth;   shift_pmu_mnu[nu] = -depth;
         shift_mmu_pnu[mu] = -depth;  shift_mmu_pnu[nu] = depth;
         shift_mmu_mnu[mu] = -depth;  shift_mmu_mnu[nu] = -depth;
 
-	shifts.push_back(shift0);
         shifts.push_back(shift_pmu_pnu);
         shifts.push_back(shift_pmu_mnu);
         shifts.push_back(shift_mmu_pnu);
         shifts.push_back(shift_mmu_mnu);
-	
+        shifts.push_back(shift_0);
+
         stencils.push_back(
           std::make_shared<GeneralLocalStencil>(GeneralLocalStencil(cgrid, shifts))
         );
@@ -517,7 +515,7 @@ IMPL(Transporter)::CovShift(
 ) {
   bool forward = heading == FORWARD;
   int direction = forward ? 1 : 0;
-  auto* pgrid = u.Grid();
+  GridBase* pgrid = u.Grid();
   GaugeLinkField f(pgrid);
 
   ACCELERATOR_SCOPE(
@@ -528,12 +526,12 @@ IMPL(Transporter)::CovShift(
 
     // no overhead from branching inside accelerator loop bc heading constant
     accelerator_for(n, pgrid->oSites(), pgrid->Nsimd(), {
-      STENCIL_ENTRY(se_mu, s_v, direction + 1, n);
-      if (forward) {
-	STENCIL_ENTRY(se_0, s_v, 0, n);
-	ACCWRITE(f_v[n], ACCREAD(u_v, se_0)*ACCREAD(v_v, se_mu));
+      STENCIL_ENTRY(se, s_v, direction, n);
+      if (forward) { 
+        STENCIL_ENTRY(se_0, s_v, 2, n);
+        ACCWRITE(f_v[n], ACCREAD(u_v, se_0)*ACCREAD(v_v, se));
       }
-      else ACCWRITE(f_v[n], adj(ACCREAD(u_v, se_mu))*ACCREAD(v_v, se_mu));
+      else ACCWRITE(f_v[n], adj(ACCREAD(u_v, se))*ACCREAD(v_v, se));
     });
   )
 
@@ -574,7 +572,7 @@ IMPL(Transporter)::CovShiftBck()
 IMPL(Transporter)::Cshift(const GaugeLinkField& u, TransportHeading heading) {
   bool forward = heading == FORWARD;
   int direction = forward ? 1 : 0;
-  auto* pgrid = u.Grid();
+  GridBase* pgrid = u.Grid();
   GaugeLinkField f(pgrid);
 
   ACCELERATOR_SCOPE(
@@ -583,7 +581,7 @@ IMPL(Transporter)::Cshift(const GaugeLinkField& u, TransportHeading heading) {
     autoView(f_v, f, AcceleratorWrite);
 
     accelerator_for(n, pgrid->oSites(), pgrid->Nsimd(), {
-      STENCIL_ENTRY(se, s_v, direction + 1, n); 
+      STENCIL_ENTRY(se, s_v, direction, n); 
       ACCWRITE(f_v[n], ACCREAD(u_v, se));
     });
   )
@@ -644,9 +642,9 @@ IMPL(Transporters)::_staple(
       STENCIL_ENTRY(se_pmu, smu_v, 1, n);
       STENCIL_ENTRY(se_mnu, snu_v, 0, n);
       STENCIL_ENTRY(se_pnu, snu_v, 1, n);
-      STENCIL_ENTRY(se_0, smunu_v, 0, n);
-      STENCIL_ENTRY(se_pmu_mnu, smunu_v, 2, n);
-      
+      STENCIL_ENTRY(se_pmu_mnu, smunu_v, 1, n);
+      STENCIL_ENTRY(se_0, smunu_v, 4, n);
+
       // upper staple
       auto v_x = ACCREAD(v_v, se_0);
       auto u_xpnu = ACCREAD(u_v, se_pnu);
@@ -658,7 +656,7 @@ IMPL(Transporters)::_staple(
       auto u_xmnu = ACCREAD(u_v, se_mnu);
       auto v_xmnu_pmu = ACCREAD(v_v, se_pmu_mnu);
       staple = staple + adj(v_xmnu)*u_xmnu*v_xmnu_pmu;
-      
+
       // full result
       ACCWRITE(rs_v[n], staple);
     });
@@ -736,8 +734,8 @@ IMPL(Transporters)::_stapleDerivative(
       STENCIL_ENTRY(se_pmu, smu_v, 1, n);
       STENCIL_ENTRY(se_mnu, snu_v, 0, n);
       STENCIL_ENTRY(se_pnu, snu_v, 1, n);
-      STENCIL_ENTRY(se_0, smunu_v, 0, n);
-      STENCIL_ENTRY(se_pmu_mnu, smunu_v, 2, n);
+      STENCIL_ENTRY(se_pmu_mnu, smunu_v, 1, n);
+      STENCIL_ENTRY(se_0, smunu_v, 4, n);
 
       // left: upper staple
       auto c_x = ACCREAD(c_v, se_0);
