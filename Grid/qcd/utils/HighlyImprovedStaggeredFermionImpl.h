@@ -650,7 +650,7 @@ public:
      * References:
      * * MILC Collaboration (2010): https://doi.org/10.1103/PhysRevD.82.074501
      */
-    GridCartesian* grid = U.Grid();
+    GridBase* grid = U.Grid();
     GaugeField R(grid);
 
     rephase(R, U);
@@ -674,7 +674,7 @@ public:
     const GaugeField& U,
     std::vector<RealD> naikEpsilons
   ) {
-    GridCartesian* grid = U.Grid();
+    GridBase* grid = U.Grid();
     GaugeField D(grid), R(grid);
     GaugeField dSdW(grid), dSdV(grid), dSdU(grid);
 
@@ -726,11 +726,11 @@ public:
      */
     int l = 0;
     
-    GridCartesian* grid = vecx[0].Grid();
+    GridBase* grid = vecx[0].Grid();
     GridRedBlackCartesian* rbgrid = SpaceTimeGrid::makeFourDimRedBlackGrid(grid);
 
-    std::vector<GaugeField> dSdX(eps_naiks.size(), grid); 
-    std::vector<GaugeField> dSdWWW(eps_naiks.size(), grid);
+    std::vector<GaugeLinkField> dSdX(eps_naiks.size(), grid); 
+    std::vector<GaugeLinkField> dSdWWW(eps_naiks.size(), grid);
     
     // process MILC inputs for solution vectors with different Naik epsilons
     for (int inaik = 0; inaik < eps_naiks.size(); ++inaik) {
