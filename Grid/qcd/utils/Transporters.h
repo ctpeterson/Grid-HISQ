@@ -441,6 +441,23 @@ public:
   }
 
 public:
+  inline const GaugeLinkField reverse(
+    const GaugeLinkField& u, 
+    int mu,
+    bool correct_boundaries = true
+  ) {
+    if (correct_boundaries) 
+      return exchange(CovShiftIdentBck(mu, adj(u))); 
+    else return CovShiftIdentBck(mu, adj(u));
+  }
+
+  inline const GaugeLinkField reverse(int mu, bool correct_boundaries = true) {
+    if (correct_boundaries) 
+      return exchange(CovShiftIdentBck(mu, adj(link(mu)))); 
+    else return CovShiftIdentBck(mu, adj(link(mu)));
+  }
+
+public:
   inline const GaugeLinkField _staple(
     const GaugeLinkField& u, 
     const GaugeLinkField& v,
@@ -469,7 +486,8 @@ public:
 public:
   inline const GaugeLinkField _upperStaple(
     const GaugeLinkField& u, 
-    const GaugeLinkField& v,
+    const GaugeLinkField& lv,
+    const GaugeLinkField& rv,
     int mu, 
     int nu
   );
@@ -477,14 +495,23 @@ public:
 public:
   inline const GaugeLinkField upperStaple(
     const GaugeLinkField& u, 
-    const GaugeLinkField& v,
+    const GaugeLinkField& lv,
+    const GaugeLinkField& rv,
+    int mu, 
+    int nu,
+    bool correct_boundaries = true
+  );  
+
+  inline const GaugeLinkField upperStaple(
+    const GaugeLinkField& lv, 
+    const GaugeLinkField& rv,
     int mu, 
     int nu,
     bool correct_boundaries = true
   );
 
   inline const GaugeLinkField upperStaple(
-    const GaugeLinkField& v, 
+    const GaugeLinkField& u, 
     int mu, 
     int nu,
     bool correct_boundaries = true
@@ -499,7 +526,8 @@ public:
 public:
   inline const GaugeLinkField _lowerStaple(
     const GaugeLinkField& u, 
-    const GaugeLinkField& v,
+    const GaugeLinkField& lv,
+    const GaugeLinkField& rv,
     int mu, 
     int nu
   );
@@ -507,20 +535,91 @@ public:
 public:
   inline const GaugeLinkField lowerStaple(
     const GaugeLinkField& u, 
-    const GaugeLinkField& v,
+    const GaugeLinkField& lv,
+    const GaugeLinkField& rv,
     int mu, 
     int nu,
     bool correct_boundaries = true
   );
 
   inline const GaugeLinkField lowerStaple(
-    const GaugeLinkField& v, 
+    const GaugeLinkField& lv, 
+    const GaugeLinkField& rv,
     int mu, 
     int nu,
     bool correct_boundaries = true
   );
 
   inline const GaugeLinkField lowerStaple(
+    const GaugeLinkField& u, 
+    int mu, 
+    int nu,
+    bool correct_boundaries = true
+  );
+
+  inline const GaugeLinkField lowerStaple(
+    int mu, 
+    int nu, 
+    bool correct_boundaries = true
+  );
+
+public:
+  inline const GaugeLinkField rightStaple(
+    const GaugeLinkField& bv,
+    const GaugeLinkField& tv,
+    const GaugeLinkField& u,
+    int mu, 
+    int nu,
+    bool correct_boundaries = true
+  );
+
+  inline const GaugeLinkField rightStaple(
+    const GaugeLinkField& bv, 
+    const GaugeLinkField& tv,
+    int mu, 
+    int nu,
+    bool correct_boundaries = true
+  );
+
+  inline const GaugeLinkField rightStaple(
+    const GaugeLinkField& u, 
+    int mu, 
+    int nu,
+    bool correct_boundaries = true
+  );
+
+  inline const GaugeLinkField rightStaple(
+    int mu, 
+    int nu, 
+    bool correct_boundaries = true
+  );
+
+public:
+  inline const GaugeLinkField leftStaple(
+    const GaugeLinkField& bv,
+    const GaugeLinkField& tv,
+    const GaugeLinkField& u, 
+    int mu, 
+    int nu,
+    bool correct_boundaries = true
+  );
+
+  inline const GaugeLinkField leftStaple(
+    const GaugeLinkField& bv, 
+    const GaugeLinkField& tv,
+    int mu, 
+    int nu,
+    bool correct_boundaries = true
+  );
+
+  inline const GaugeLinkField leftStaple(
+    const GaugeLinkField& u, 
+    int mu, 
+    int nu,
+    bool correct_boundaries = true
+  );
+
+  inline const GaugeLinkField leftStaple(
     int mu, 
     int nu, 
     bool correct_boundaries = true
@@ -754,13 +853,22 @@ IMPL(Transporters)::staple(int mu, int nu, bool correct_boundaries) {
 
 // -- upper staple --//
 
-/** @brief calculate upper staple */
 IMPL(Transporters)::_upperStaple(
   const GaugeLinkField& u, // mu link
-  const GaugeLinkField& v, // nu link
+  const GaugeLinkField& lv, // left nu link
+  const GaugeLinkField& rv, // right nu link
   int mu, 
   int nu
 ) {
+  /**
+   * @brief Calculates upper staple only
+   * @author Curtis Taylor Peterson
+   * @details
+   * Calculates upper staple only with orientation
+   * ν      ---🠢
+   * 🠡      🠡   🠣
+   * -🠢 μ  x
+   */ 
   GaugeLinkField rs(_pgrid);
 
   ACCELERATOR_SCOPE(
@@ -769,7 +877,8 @@ IMPL(Transporters)::_upperStaple(
     GeneralLocalStencilView smunu_v = stencil(mu, nu).View(AcceleratorRead);
     
     autoView(u_v, u, AcceleratorRead);
-    autoView(v_v, v, AcceleratorRead);
+    autoView(lv_v, lv, AcceleratorRead);
+    autoView(rv_v, rv, AcceleratorRead);
     autoView(rs_v, rs, AcceleratorWrite);
 
     accelerator_for(n, _pgrid->oSites(), _pgrid->Nsimd(), {
@@ -777,9 +886,9 @@ IMPL(Transporters)::_upperStaple(
       STENCIL_ENTRY(se_pnu, snu_v, 1, n);
       STENCIL_ENTRY(se_0, smunu_v, 4, n);
 
-      auto v_x = ACCREAD(v_v, se_0);
+      auto v_x = ACCREAD(lv_v, se_0);
       auto u_xpnu = ACCREAD(u_v, se_pnu);
-      auto v_xpmu = ACCREAD(v_v, se_pmu);
+      auto v_xpmu = ACCREAD(rv_v, se_pmu);
       ACCWRITE(rs_v[n], v_x*u_xpnu*adj(v_xpmu));
     });
   )
@@ -789,13 +898,25 @@ IMPL(Transporters)::_upperStaple(
 
 IMPL(Transporters)::upperStaple(
   const GaugeLinkField& u, // mu link
-  const GaugeLinkField& v, // nu link
+  const GaugeLinkField& lv, // left nu link
+  const GaugeLinkField& rv, // right nu link
+  int mu, 
+  int nu,
+  bool correct_boundaries
+) {
+  if (correct_boundaries) return exchange(_upperStaple(u, lv, rv, mu, nu)); 
+  else return _upperStaple(u, lv, rv, mu, nu); 
+}
+
+IMPL(Transporters)::upperStaple(
+  const GaugeLinkField& lv, // mu link
+  const GaugeLinkField& rv, // nu link
   int mu, 
   int nu,
   bool correct_boundaries
 ) { 
-  if (correct_boundaries) return exchange(_upperStaple(u, v, mu, nu)); 
-  else return _upperStaple(u, v, mu, nu); 
+  if (correct_boundaries) return exchange(_upperStaple(link(mu), lv, rv, mu, nu)); 
+  else return _upperStaple(link(mu), lv, rv, mu, nu); 
 }
 
 IMPL(Transporters)::upperStaple(
@@ -804,13 +925,15 @@ IMPL(Transporters)::upperStaple(
   int nu, 
   bool correct_boundaries
 ) { 
-  if (correct_boundaries) return exchange(_upperStaple(u, link(nu), mu, nu)); 
-  else return _upperStaple(u, link(nu), mu, nu); 
+  if (correct_boundaries) 
+    return exchange(_upperStaple(u, link(nu), link(nu), mu, nu)); 
+  else return _upperStaple(u, link(nu), link(nu), mu, nu); 
 }
 
 IMPL(Transporters)::upperStaple(int mu, int nu, bool correct_boundaries) { 
-  if (correct_boundaries) return exchange(_upperStaple(link(mu), link(nu), mu, nu)); 
-  else return _upperStaple(link(mu), link(nu), mu, nu); 
+  if (correct_boundaries) 
+    return exchange(_upperStaple(link(mu), link(nu), link(nu), mu, nu)); 
+  else return _upperStaple(link(mu), link(nu), link(nu), mu, nu); 
 }
 
 // -- lower staple --//
@@ -818,10 +941,20 @@ IMPL(Transporters)::upperStaple(int mu, int nu, bool correct_boundaries) {
 /** @brief calculate lower staple */
 IMPL(Transporters)::_lowerStaple(
   const GaugeLinkField& u, // mu link
-  const GaugeLinkField& v, // nu link
+  const GaugeLinkField& lv, // left nu link
+  const GaugeLinkField& rv, // right nu link
   int mu, 
   int nu
 ) {
+  /**
+   * @brief Calculates lower staple only
+   * @author Curtis Taylor Peterson
+   * @details
+   * Calculates lower staple only with orientation
+   * ν      x
+   * 🠡      🠣   🠡
+   * -🠢 μ   ---🠢 
+   */ 
   GaugeLinkField rs(_pgrid);
 
   ACCELERATOR_SCOPE(
@@ -830,16 +963,17 @@ IMPL(Transporters)::_lowerStaple(
     GeneralLocalStencilView smunu_v = stencil(mu, nu).View(AcceleratorRead);
     
     autoView(u_v, u, AcceleratorRead);
-    autoView(v_v, v, AcceleratorRead);
+    autoView(lv_v, lv, AcceleratorRead);
+    autoView(rv_v, rv, AcceleratorRead);
     autoView(rs_v, rs, AcceleratorWrite);
 
     accelerator_for(n, _pgrid->oSites(), _pgrid->Nsimd(), {
       STENCIL_ENTRY(se_mnu, snu_v, 0, n);
       STENCIL_ENTRY(se_pmu_mnu, smunu_v, 1, n);
 
-      auto v_xmnu = ACCREAD(v_v, se_mnu);
+      auto v_xmnu = ACCREAD(lv_v, se_mnu);
       auto u_xmnu = ACCREAD(u_v, se_mnu);
-      auto v_xmnu_pmu = ACCREAD(v_v, se_pmu_mnu);
+      auto v_xmnu_pmu = ACCREAD(rv_v, se_pmu_mnu);
       ACCWRITE(rs_v[n], adj(v_xmnu)*u_xmnu*v_xmnu_pmu);
     });
   )
@@ -849,13 +983,25 @@ IMPL(Transporters)::_lowerStaple(
 
 IMPL(Transporters)::lowerStaple(
   const GaugeLinkField& u, // mu link
-  const GaugeLinkField& v, // nu link
+  const GaugeLinkField& lv, // left nu link
+  const GaugeLinkField& rv, // right nu link
+  int mu, 
+  int nu,
+  bool correct_boundaries
+) {
+  if (correct_boundaries) return exchange(_lowerStaple(u, lv, rv, mu, nu)); 
+  else return _lowerStaple(u, lv, rv, mu, nu); 
+}
+
+IMPL(Transporters)::lowerStaple(
+  const GaugeLinkField& lv, // left nu link
+  const GaugeLinkField& rv, // right nu link
   int mu, 
   int nu,
   bool correct_boundaries
 ) { 
-  if (correct_boundaries) return exchange(_lowerStaple(u, v, mu, nu)); 
-  else return _lowerStaple(u, v, mu, nu); 
+  if (correct_boundaries) return exchange(_lowerStaple(link(mu), lv, rv, mu, nu)); 
+  else return _lowerStaple(link(mu), lv, rv, mu, nu); 
 }
 
 IMPL(Transporters)::lowerStaple(
@@ -864,13 +1010,115 @@ IMPL(Transporters)::lowerStaple(
   int nu, 
   bool correct_boundaries
 ) { 
-  if (correct_boundaries) return exchange(_lowerStaple(u, link(nu), mu, nu)); 
-  else return _lowerStaple(u, link(nu), mu, nu); 
+  if (correct_boundaries) 
+    return exchange(_lowerStaple(u, link(nu), link(nu), mu, nu)); 
+  else return _lowerStaple(u, link(nu), link(nu), mu, nu); 
 }
 
 IMPL(Transporters)::lowerStaple(int mu, int nu, bool correct_boundaries) { 
-  if (correct_boundaries) return exchange(_lowerStaple(link(mu), link(nu), mu, nu)); 
-  else return _lowerStaple(link(mu), link(nu), mu, nu); 
+  if (correct_boundaries) 
+    return exchange(_lowerStaple(link(mu), link(nu), link(nu), mu, nu)); 
+  else return _lowerStaple(link(mu), link(nu), link(nu), mu, nu); 
+}
+
+//-- right staple --//
+
+/**
+ * Right staple orientation:
+ *       🠤----      
+ * ν          🠡
+ * 🠡   x ----🠢      
+ * -🠢 μ    
+ */ 
+
+IMPL(Transporters)::rightStaple(
+  const GaugeLinkField& bv, // bottom mu link
+  const GaugeLinkField& tv, // top mu link
+  const GaugeLinkField& u, // nu link
+  int mu, 
+  int nu,
+  bool correct_boundaries
+) { 
+  if (correct_boundaries) return exchange(_upperStaple(u, bv, tv, nu, mu)); 
+  else return _upperStaple(u, bv, tv, nu, mu); 
+}
+
+IMPL(Transporters)::rightStaple(
+  const GaugeLinkField& bv, // bottom mu link
+  const GaugeLinkField& tv, // top mu link
+  int mu, 
+  int nu,
+  bool correct_boundaries
+) { 
+  if (correct_boundaries) return exchange(_upperStaple(link(nu), bv, tv, nu, mu)); 
+  else return _upperStaple(link(nu), bv, tv, nu, mu); 
+}
+
+IMPL(Transporters)::rightStaple(
+  const GaugeLinkField& u, 
+  int mu, 
+  int nu, 
+  bool correct_boundaries
+) { 
+  if (correct_boundaries) 
+    return exchange(_upperStaple(u, link(mu), link(mu), nu, mu)); 
+  else return _upperStaple(u, link(mu), link(mu), nu, mu); 
+}
+
+IMPL(Transporters)::rightStaple(int mu, int nu, bool correct_boundaries) { 
+  if (correct_boundaries) 
+    return exchange(_upperStaple(link(nu), link(mu), link(mu), nu, mu)); 
+  else return _upperStaple(link(nu), link(mu), link(mu), nu, mu); 
+}
+
+//-- left staple --//
+
+/**
+ * Left staple orientation:
+ *      ----🠢      
+ * ν    🠡
+ * 🠡    🠤---- x     
+ * -🠢 μ    
+ */
+
+IMPL(Transporters)::leftStaple(
+  const GaugeLinkField& bv, // bottom mu link
+  const GaugeLinkField& tv, // top mu link
+  const GaugeLinkField& u, // nu link
+  int mu, 
+  int nu,
+  bool correct_boundaries
+) { 
+  if (correct_boundaries) return exchange(_lowerStaple(u, bv, tv, nu, mu)); 
+  else return _lowerStaple(u, bv, tv, nu, mu); 
+}
+
+IMPL(Transporters)::leftStaple(
+  const GaugeLinkField& bv, // bottom mu link
+  const GaugeLinkField& tv, // top mu link
+  int mu, 
+  int nu,
+  bool correct_boundaries
+) { 
+  if (correct_boundaries) return exchange(_lowerStaple(link(nu), bv, tv, nu, mu)); 
+  else return _lowerStaple(link(nu), bv, tv, nu, mu); 
+}
+
+IMPL(Transporters)::leftStaple(
+  const GaugeLinkField& u, 
+  int mu, 
+  int nu, 
+  bool correct_boundaries
+) { 
+  if (correct_boundaries) 
+    return exchange(_lowerStaple(u, link(mu), link(mu), nu, mu)); 
+  else return _lowerStaple(u, link(mu), link(mu), nu, mu); 
+}
+
+IMPL(Transporters)::leftStaple(int mu, int nu, bool correct_boundaries) { 
+  if (correct_boundaries) 
+    return exchange(_lowerStaple(link(nu), link(mu), link(mu), nu, mu)); 
+  else return _lowerStaple(link(nu), link(mu), link(mu), nu, mu); 
 }
 
 //-- symmetric staple derivative --//
