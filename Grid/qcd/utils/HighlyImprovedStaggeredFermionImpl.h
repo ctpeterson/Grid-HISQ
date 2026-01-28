@@ -690,16 +690,18 @@ public:
     projectionDerivative(dSdV, dSdW, W, V);
     smearDerivative(dSdU, dSdV, R);
     
-    UdSdU = U*adj(dSdU);
+    for (int mu = 0; mu < Nd; ++mu) {
+      auto udsdu = PeekIndex<LorentzIndex>(U, mu)*PeekIndex<LorentzIndex>(dSdU, mu);
+      PokeIndex<LorentzIndex>(UdSdU, udsdu, mu);
+    }
   }
 
-  template <typename FermionField>
   void milcSmearDerivative(
     GaugeField& UdSdU,
     const GaugeField& W,
     const GaugeField& V,
     const GaugeField& U,
-    std::vector<FermionField>& vecx, 
+    std::vector<typename Gimpl::FermionField>& vecx, 
     std::vector<RealD> vecdt, 
     std::vector<int> n_orders_naik,
     std::vector<RealD> eps_naiks
@@ -727,11 +729,14 @@ public:
     int l = 0;
     
     GridBase* grid = vecx[0].Grid();
-    GridRedBlackCartesian* rbgrid = SpaceTimeGrid::makeFourDimRedBlackGrid(grid);
+    GridCartesian* cgrid = static_cast<GridCartesian*>(grid);
+    GridRedBlackCartesian* rbgrid = SpaceTimeGrid::makeFourDimRedBlackGrid(cgrid);
 
-    std::vector<GaugeLinkField> dSdX(eps_naiks.size(), grid); 
-    std::vector<GaugeLinkField> dSdWWW(eps_naiks.size(), grid);
+    std::vector<GaugeField> dSdX(eps_naiks.size(), grid); 
+    std::vector<GaugeField> dSdWWW(eps_naiks.size(), grid);
     
+    GaugeLinkField t(grid);
+
     // process MILC inputs for solution vectors with different Naik epsilons
     for (int inaik = 0; inaik < eps_naiks.size(); ++inaik) {
       dSdX[inaik] = Zero();
@@ -739,8 +744,8 @@ public:
       
       // outer product
       for (int i = 0; i < n_orders_naik[inaik]; ++i) {
-        FermionField temp(rbgrid);
-        FermionField X(grid), Y(grid);
+        typename Gimpl::FermionField temp(rbgrid);
+        typename Gimpl::FermionField X(grid), Y(grid);
         
         X = Zero(), Y = Zero();
 
@@ -757,12 +762,14 @@ public:
         // accumulate outer products
         for (int mu = 0; mu < Nd; ++mu) {
           // 1-link contribution
-          dSdX[inaik] += outerProduct(Cshift(Y, mu, 1), X); 
-          dSdX[inaik] -= outerProduct(Cshift(X, mu, 1), Y);
+          t = outerProduct(Cshift(Y, mu, 1), X); 
+          t -= outerProduct(Cshift(X, mu, 1), Y);
+          PokeIndex<LorentzIndex>(dSdWWW[inaik], t, mu);
           
           // 3-link (Naik) contribution
-          dSdX[inaik] += outerProduct(Cshift(Y, mu, 3), X);
-          dSdX[inaik] -= outerProduct(Cshift(X, mu, 3), Y);
+          t = outerProduct(Cshift(Y, mu, 3), X);
+          t -= outerProduct(Cshift(X, mu, 3), Y);
+          PokeIndex<LorentzIndex>(dSdX[inaik], t, mu);
         }
 
         ++l;

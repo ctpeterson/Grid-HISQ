@@ -33,6 +33,7 @@ directory
 #include <Grid/qcd/utils/WilsonLoops.h>
 #include <Grid/qcd/action/gauge/WilsonGaugeAction.h>
 #include <Grid/qcd/action/gauge/PlaqPlusRectangleAction.h>
+#include <Grid/qcd/action/gauge/OneLoopGaugeAction.h>
 
 NAMESPACE_BEGIN(Grid);
 
@@ -55,6 +56,9 @@ typedef DBW2GaugeAction<PeriodicGimplR>            DBW2GaugeActionR;
 typedef DBW2GaugeAction<PeriodicGimplF>            DBW2GaugeActionF;
 typedef DBW2GaugeAction<PeriodicGimplD>            DBW2GaugeActionD;
 
+typedef OneLoopGaugeAction<PeriodicGimplR>         PeriodicOneLoopGaugeActionR;
+typedef OneLoopGaugeAction<PeriodicGimplF>         PeriodicOneLoopGaugeActionF;
+typedef OneLoopGaugeAction<PeriodicGimplD>         PeriodicOneLoopGaugeActionD;
 
 typedef WilsonGaugeAction<ConjugateGimplR>          ConjugateWilsonGaugeActionR;
 typedef WilsonGaugeAction<ConjugateGimplF>          ConjugateWilsonGaugeActionF;
