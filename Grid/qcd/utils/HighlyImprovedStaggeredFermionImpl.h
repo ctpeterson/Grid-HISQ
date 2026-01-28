@@ -62,6 +62,7 @@ directory
 
 #include <Grid/qcd/utils/Transporters.h>
 #include <Grid/qcd/utils/UnitaryProjection.h>
+#include <Grid/qcd/action/ActionParams.h>
 
 NAMESPACE_BEGIN(Grid);
 
@@ -258,7 +259,6 @@ public:
     stagPhases(Nd, grid), 
     params(StaggeredImplParams({1, 1, 1, -1}))
   { init(grid, cell, calculateStaggeredPhases); }
-
 
 private:
   void calcStagPhases(StaggeredPhases& phases) {
@@ -764,21 +764,15 @@ public:
           // 1-link contribution
           t = outerProduct(Cshift(Y, mu, 1), X); 
           t -= outerProduct(Cshift(X, mu, 1), Y);
-          PokeIndex<LorentzIndex>(dSdWWW[inaik], t, mu);
+          PokeIndex<LorentzIndex>(dSdX[inaik], vecdt[l]*t, mu);
           
           // 3-link (Naik) contribution
           t = outerProduct(Cshift(Y, mu, 3), X);
           t -= outerProduct(Cshift(X, mu, 3), Y);
-          PokeIndex<LorentzIndex>(dSdX[inaik], t, mu);
+          PokeIndex<LorentzIndex>(dSdWWW[inaik], vecdt[l]*t, mu);
         }
-
         ++l;
-      } 
-
-      // rescale (~dt*alpha_l)
-      dSdX[inaik] *= vecdt[l];
-      dSdWWW[inaik] *= vecdt[l];
-    }
+    } }
     
     // calculate full HISQ force
     milcSmearDerivative(UdSdU, dSdX, dSdWWW, W, V, U, eps_naiks);
