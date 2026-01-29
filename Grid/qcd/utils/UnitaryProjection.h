@@ -71,15 +71,16 @@ private:
   typedef typename Eigen::Matrix<std::complex<double>, Nc, Nc> EigenScalarMatrix;
   typedef typename Eigen::JacobiSVD<EigenScalarMatrix> EigenSVD;
 
-  RealD cutoff, svdtol;
+  RealD cutoff, relsvdtol, abssvdtol;
   bool backupSVD;
 
 public:
   UnitaryProjection(
     RealD cutoff = SMALL, 
     bool backupSVD = false,
-    RealD svdtol = 1e-8
-  ): cutoff(cutoff), svdtol(svdtol), backupSVD(backupSVD) 
+    RealD relsvdtol = 1e-8,
+    RealD abssvdtol = 1e-8
+  ): cutoff(cutoff), backupSVD(backupSVD), relsvdtol(relsvdtol), abssvdtol(abssvdtol) 
   { assert(Nc == 3 && "unitary projection only supported for Nc = 3 for now"); }
 
 private:
@@ -269,18 +270,18 @@ private:
 
         grid->LocalIndexToLocalCoor(n, lcoor);
 
-	peekLocalSite(localDetA, detA_v, lcoor);
+	      peekLocalSite(localDetA, detA_v, lcoor);
         peekLocalSite(localDetB, detB_v, lcoor);
 
-	peekLocalSite(locale0, e0_v, lcoor);
+	      peekLocalSite(locale0, e0_v, lcoor);
         peekLocalSite(locale1, e1_v, lcoor);
         peekLocalSite(locale2, e2_v, lcoor);
 
-        detDiffTooLarge = abs(localDetA - localDetB) > svdtol;
+        detDiffTooLarge = abs((localDetA - localDetB)/localDetB) > relsvdtol;
 
-	e0TooSmall = abs(locale0) < svdtol;
-        e1TooSmall = abs(locale1) < svdtol;
-        e2TooSmall = abs(locale2) < svdtol;
+	      e0TooSmall = abs(locale0) < abssvdtol;
+        e1TooSmall = abs(locale1) < abssvdtol;
+        e2TooSmall = abs(locale2) < abssvdtol;
 
         if (detDiffTooLarge or e0TooSmall or e1TooSmall or e2TooSmall) {
           GridScalarMatrix gu;

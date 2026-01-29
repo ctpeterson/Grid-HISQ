@@ -122,9 +122,10 @@ const double // Naik epsilon heavy quark mass coefficients
   NAIKEPS4 = -73697.0/3942400.0;
 const bool BACKUPSVD = true; // use backup SVD in unitary projection when applicable
 const double // unitary projection parameters
-  REUNITCUTOFF = 1e-20,           // base-level cutoff on eigenvalues
-  REUNITDERIVCUTOFF = 5e-5,  // base-level cutoff on eigenvalues for derivative
-  BACKUPSVDTOLERANCE = 1e-8;      // tolerance for triggering backup SVD
+  REUNITCUTOFF = 1e-20,         // base-level cutoff on eigenvalues
+  REUNITDERIVCUTOFF = 5e-5,     // base-level cutoff on eigenvalues for derivative
+  RELBACKUPSVDTOLERANCE = 1e-8, // relative tolerance for triggering backup SVD
+  ABSBACKUPSVDTOLERANCE = 1e-8; // absolute tolerance for triggering backup SVD
 
 struct HISFContext {
   /**
@@ -142,7 +143,8 @@ struct HISFContext {
 
   // unitary projection parameters
   bool backupSVD;
-  RealD svdTolerance;
+  RealD relSVDTolerance;
+  RealD absSVDTolerance;
   RealD eigenCutoff;
 
   HISFContext() { };
@@ -155,7 +157,8 @@ struct HISFContext {
     RealD lepage, 
     RealD naik,
     bool backupSVD,
-    RealD svdTolerance,
+    RealD relSVDTolerance,
+    RealD absSVDTolerance,
     RealD eigenCutoff
   ):
     c0(c0), 
@@ -165,7 +168,8 @@ struct HISFContext {
     lepage(lepage), 
     naik(naik),
     backupSVD(backupSVD),
-    svdTolerance(svdTolerance),
+    relSVDTolerance(relSVDTolerance),
+    absSVDTolerance(absSVDTolerance),
     eigenCutoff(eigenCutoff) { };
   
   HISFContext(RealD c0, RealD c1, RealD c2, RealD c3, RealD lepage, RealD naik):
@@ -174,8 +178,16 @@ struct HISFContext {
   HISFContext(RealD c0, RealD c1, RealD c2, RealD c3): 
     c0(c0), c1(c1), c2(c2), c3(c3), lepage(0.0), naik(0.0) { };
   
-  HISFContext(bool backupSVD, RealD svdTolerance, RealD eigenCutoff):
-    backupSVD(backupSVD), svdTolerance(svdTolerance), eigenCutoff(eigenCutoff) { };
+  HISFContext(
+    bool backupSVD, 
+    RealD relSVDTolerance, 
+    RealD absSVDTolerance, 
+    RealD eigenCutoff
+  ):
+    backupSVD(backupSVD), 
+    relSVDTolerance(relSVDTolerance), 
+    absSVDTolerance(absSVDTolerance), 
+    eigenCutoff(eigenCutoff) { };
 };
 
 //
@@ -419,7 +431,8 @@ public:
     UnitaryProjection<Gimpl> projection(
       ctx.eigenCutoff, 
       ctx.backupSVD, 
-      ctx.svdTolerance
+      ctx.relSVDTolerance,
+      ctx.absSVDTolerance
     );
     projection.project(V, U);
   }
@@ -428,7 +441,8 @@ public:
     UnitaryProjection<Gimpl> projection(
       when(forDerivative, REUNITDERIVCUTOFF, REUNITCUTOFF), 
       BACKUPSVD, 
-      BACKUPSVDTOLERANCE
+      RELBACKUPSVDTOLERANCE,
+      ABSBACKUPSVDTOLERANCE
     );
     projection.project(V, U);
   }
@@ -599,7 +613,8 @@ public:
     UnitaryProjection<Gimpl> projection(
       ctx.eigenCutoff, 
       ctx.backupSVD, 
-      ctx.svdTolerance
+      ctx.relSVDTolerance,
+      ctx.absSVDTolerance
     );
     projection.derivative(dVdU, dZdV, U); 
   }
@@ -612,7 +627,8 @@ public:
     UnitaryProjection<Gimpl> projection(
       REUNITDERIVCUTOFF, 
       BACKUPSVD, 
-      BACKUPSVDTOLERANCE
+      RELBACKUPSVDTOLERANCE,
+      ABSBACKUPSVDTOLERANCE
     );
     projection.derivative(dVdU, dZdV, U);
   }
@@ -657,7 +673,7 @@ public:
       dSdW += D;
     }
     
-    projectionDerivative(dSdV, dSdW, W, V, fatCtx);
+    projectionDerivative(dSdV, dSdW, W, V); // no need to pass in context
     smearDerivative(dSdU, dSdV, U, fatCtx);
     
     for (int mu = 0; mu < Nd; ++mu) {
@@ -666,12 +682,13 @@ public:
     }
   }
 
+  template <typename FermionField>
   void milcSmearDerivative(
     GaugeField& UdSdU,
     const GaugeField& W,
     const GaugeField& V,
     const GaugeField& U,
-    std::vector<typename Gimpl::FermionField>& vecx, 
+    std::vector<FermionField>& vecx, 
     HISFContext fatCtx,
     HISFContext asqCtx,
     std::vector<RealD> vecdt, 
@@ -716,8 +733,8 @@ public:
       
       // outer product
       for (int i = 0; i < n_orders_naik[inaik]; ++i) {
-        typename Gimpl::FermionField temp(rbgrid);
-        typename Gimpl::FermionField X(grid), Y(grid);
+        FermionField temp(rbgrid);
+        FermionField X(grid), Y(grid);
         
         X = Zero(), Y = Zero();
 
