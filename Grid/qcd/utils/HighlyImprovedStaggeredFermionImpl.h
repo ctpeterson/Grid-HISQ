@@ -628,43 +628,6 @@ public:
   }
 
 public:
-  void milcSmear(
-    std::vector<GaugeField>& X,
-    std::vector<GaugeField>& WWW,
-    GaugeField& W,
-    GaugeField& V,
-    const GaugeField& U,
-    std::vector<RealD> naikEpsilons,
-    bool forDerivative = false
-  ) {
-    /**
-     * @brief MILC interface for full HISQ smearing
-     * @author Curtis Taylor Peterson
-     * @details
-     * Full HISQ smearing as implemented in the MILC codebase. This method
-     * performs the two levels of smearing needed for HISQ, with optional
-     * inclusion of the Naik epsilon correction for heavy quarks. This method
-     * is meant to provide an interface for MILC users to utilize the HISQ
-     * implementation in Grid.
-     * 
-     * References:
-     * * MILC Collaboration (2010): https://doi.org/10.1103/PhysRevD.82.074501
-     */
-    GridBase* grid = U.Grid();
-    GaugeField R(grid);
-
-    rephase(R, U);
-
-    smear(V, R);
-    project(W, V, forDerivative);
-
-    for (int flavor = 0; flavor < X.size(); ++flavor) {
-      RealD eps = naikEpsilons[flavor];
-      HISFContext ctx(ASQL1 + eps/8.0, ASQL3, ASQL5, ASQL7, LEPAGE, NAIK*(1.0 + eps));
-      smear(X[flavor], WWW[flavor], W, ctx);
-    }
-  }
-
   void milcSmearDerivative(
     GaugeField& UdSdU,
     const std::vector<GaugeField>& dSdX,
@@ -672,27 +635,34 @@ public:
     const GaugeField& W,
     const GaugeField& V,
     const GaugeField& U,
+    HISFContext fatCtx,
+    HISFContext asqCtx,
     std::vector<RealD> naikEpsilons
   ) {
     GridBase* grid = U.Grid();
-    GaugeField D(grid), R(grid);
+    GaugeField D(grid);
     GaugeField dSdW(grid), dSdV(grid), dSdU(grid);
-
-    rephase(R, U);
 
     for (int flavor = 0; flavor < dSdX.size(); ++flavor) {
       RealD eps = naikEpsilons[flavor];
-      HISFContext ctx(ASQL1 + eps/8.0, ASQL3, ASQL5, ASQL7, LEPAGE, NAIK*(1.0 + eps));
+      HISFContext ctx(
+        asqCtx.c0 + eps/8.0, 
+        asqCtx.c1, 
+        asqCtx.c2, 
+        asqCtx.c3, 
+        asqCtx.lepage, 
+        asqCtx.naik*(1.0 + eps)
+      );
       smearDerivative(D, adj(dSdX[flavor]), adj(dSdWWW[flavor]), W, ctx);
       dSdW += D;
     }
     
-    projectionDerivative(dSdV, dSdW, W, V);
-    smearDerivative(dSdU, dSdV, R);
+    projectionDerivative(dSdV, dSdW, W, V, fatCtx);
+    smearDerivative(dSdU, dSdV, U, fatCtx);
     
     for (int mu = 0; mu < Nd; ++mu) {
-      auto udsdu = PeekIndex<LorentzIndex>(U, mu)*PeekIndex<LorentzIndex>(dSdU, mu);
-      PokeIndex<LorentzIndex>(UdSdU, udsdu, mu);
+      auto u = PeekIndex<LorentzIndex>(U, mu);
+      PokeIndex<LorentzIndex>(UdSdU, u*adj(PeekIndex<LorentzIndex>(dSdU, mu)), mu);
     }
   }
 
@@ -702,6 +672,8 @@ public:
     const GaugeField& V,
     const GaugeField& U,
     std::vector<typename Gimpl::FermionField>& vecx, 
+    HISFContext fatCtx,
+    HISFContext asqCtx,
     std::vector<RealD> vecdt, 
     std::vector<int> n_orders_naik,
     std::vector<RealD> eps_naiks
@@ -775,7 +747,7 @@ public:
     } }
     
     // calculate full HISQ force
-    milcSmearDerivative(UdSdU, dSdX, dSdWWW, W, V, U, eps_naiks);
+    milcSmearDerivative(UdSdU, dSdX, dSdWWW, W, V, U, fatCtx, asqCtx, eps_naiks);
   }
 
 };
