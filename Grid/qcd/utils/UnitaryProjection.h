@@ -80,7 +80,11 @@ public:
     bool backupSVD = false,
     RealD relsvdtol = 1e-8,
     RealD abssvdtol = 1e-8
-  ): cutoff(cutoff), backupSVD(backupSVD), relsvdtol(relsvdtol), abssvdtol(abssvdtol) 
+  ): 
+    cutoff(cutoff), 
+    backupSVD(backupSVD), 
+    relsvdtol(relsvdtol), 
+    abssvdtol(abssvdtol) 
   { assert(Nc == 3 && "unitary projection only supported for Nc = 3 for now"); }
 
 private:
@@ -307,7 +311,7 @@ private:
      * @author Curtis Taylor Peterson
      * @details
      * This is a very clever approach to calculating the derivative of the unitary 
-     * projection; it was  invented by the authors of the original HISQ paper 
+     * projection; it was invented by the authors of the original HISQ paper 
      * [PRD72(2007)054502] and expanded upon by James Osborn and Xiao-Yong Jin in the 
      * Quantum EXpressions code. The objective is to calculate 
      * (1) dQ/dU = CZ + U dZ/dU,

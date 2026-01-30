@@ -190,6 +190,35 @@ struct HISFContext {
     eigenCutoff(eigenCutoff) { };
 };
 
+struct MILCContext {
+  HISFContext fat7;
+  HISFContext asqtad;
+  std::vector<Real> naikFactors;
+  std::vector<Real> naikEpsilons;
+  std::vector<int> naikOrders;
+
+  MILCContext(
+    HISFContext fat7,
+    HISFContext asqtad,
+    std::vector<Real> naikFactors,
+    std::vector<Real> naikEpsilons,
+    std::vector<int> naikOrders
+  ):
+    fat7(fat7),
+    asqtad(asqtad),
+    naikFactors(naikFactors),
+    naikEpsilons(naikEpsilons),
+    naikOrders(naikOrders) { };
+  
+  int numNaiks() const { return naikEpsilons.size(); }
+
+  int order(int species) const { return naikOrders[species]; }
+
+  Real epsilon(int species) const { return naikEpsilons[species]; }
+
+  Real factor(int naik) const { return naikFactors[naik]; }
+};
+
 //
 // helper procedures
 //
@@ -639,7 +668,7 @@ public:
     const GaugeField& V,
     const GaugeField& U
   ) { // projection constructor inputs don't matter because no projection performed
-    UnitaryProjection<Gimpl> projection(1e-20, true, 1e-8);
+    UnitaryProjection<Gimpl> projection(1e-20, true, 1e-8, 1e-8);
     projection.derivative(dVdU, dZdV, V, U); 
   }
 
@@ -651,30 +680,27 @@ public:
     const GaugeField& W,
     const GaugeField& V,
     const GaugeField& U,
-    HISFContext fatCtx,
-    HISFContext asqCtx,
-    std::vector<RealD> naikEpsilons
+    const MILCContext ctx
   ) {
     GridBase* grid = U.Grid();
-    GaugeField D(grid);
-    GaugeField dSdW(grid), dSdV(grid), dSdU(grid);
+    GaugeField tdSdW(grid), dSdW(grid), dSdV(grid), dSdU(grid);
 
-    for (int flavor = 0; flavor < dSdX.size(); ++flavor) {
-      RealD eps = naikEpsilons[flavor];
-      HISFContext ctx(
-        asqCtx.c0 + eps/8.0, 
-        asqCtx.c1, 
-        asqCtx.c2, 
-        asqCtx.c3, 
-        asqCtx.lepage, 
-        asqCtx.naik*(1.0 + eps)
+    for (int species = 0; species < ctx.numNaiks(); ++species) {
+      RealD eps = ctx.epsilon(species);
+      HISFContext asqCtx(
+        ctx.asqtad.c0 + eps/8.0, 
+        ctx.asqtad.c1, 
+        ctx.asqtad.c2, 
+        ctx.asqtad.c3, 
+        ctx.asqtad.lepage, 
+        ctx.asqtad.naik*(1.0 + eps)
       );
-      smearDerivative(D, adj(dSdX[flavor]), adj(dSdWWW[flavor]), W, ctx);
-      dSdW += D;
+      smearDerivative(tdSdW, adj(dSdX[species]), adj(dSdWWW[species]), W, asqCtx);
+      dSdW += tdSdW;
     }
     
     projectionDerivative(dSdV, dSdW, W, V); // no need to pass in context
-    smearDerivative(dSdU, dSdV, U, fatCtx);
+    smearDerivative(dSdU, dSdV, U, ctx.fat7);
     
     for (int mu = 0; mu < Nd; ++mu) {
       auto u = PeekIndex<LorentzIndex>(U, mu);
@@ -688,12 +714,8 @@ public:
     const GaugeField& W,
     const GaugeField& V,
     const GaugeField& U,
-    std::vector<FermionField>& vecx, 
-    HISFContext fatCtx,
-    HISFContext asqCtx,
-    std::vector<RealD> vecdt, 
-    std::vector<int> n_orders_naik,
-    std::vector<RealD> eps_naiks
+    const std::vector<FermionField>& vecx, 
+    const MILCContext ctx
   ) {
     /**
      * @brief MILC interface for full HISQ smearing derivative
@@ -708,9 +730,9 @@ public:
      * (1) (Mdag M)^(-4/q) = alpha_0 + sum_l alpha_l/(M^dag M + beta_l). 
      * Hence the index l runs over the introduce a different "Naik epsilon" for each M. 
      * Hence, we can think of the total applicationof this operator as having an index 
-     * inaik, running over the different Naik epsilons; for each inaik there is a 
-     * possibly different order_inaik, then the operator has an index l running up to 
-     * order_inaik. All terms with inaik=0 correspond to epsilon_Naik = 0.
+     * species, running over the different Naik epsilons; for each species there is a 
+     * possibly different order_species, then the operator has an index l running up to 
+     * order_species. All terms with species=0 correspond to epsilon_Naik = 0.
      * 
      * References:
      * * MILC Collaboration (2010): https://doi.org/10.1103/PhysRevD.82.074501
@@ -721,18 +743,18 @@ public:
     GridCartesian* cgrid = static_cast<GridCartesian*>(grid);
     GridRedBlackCartesian* rbgrid = SpaceTimeGrid::makeFourDimRedBlackGrid(cgrid);
 
-    std::vector<GaugeField> dSdX(eps_naiks.size(), grid); 
-    std::vector<GaugeField> dSdWWW(eps_naiks.size(), grid);
+    std::vector<GaugeField> dSdX(ctx.numNaiks(), grid); 
+    std::vector<GaugeField> dSdWWW(ctx.numNaiks(), grid);
     
     GaugeLinkField t(grid);
 
     // process MILC inputs for solution vectors with different Naik epsilons
-    for (int inaik = 0; inaik < eps_naiks.size(); ++inaik) {
-      dSdX[inaik] = Zero();
-      dSdWWW[inaik] = Zero();
+    for (int species = 0; species < ctx.numNaiks(); ++species) {
+      dSdX[species] = Zero();
+      dSdWWW[species] = Zero();
       
       // outer product
-      for (int i = 0; i < n_orders_naik[inaik]; ++i) {
+      for (int i = 0; i < ctx.order(species); ++i) {
         FermionField temp(rbgrid);
         FermionField X(grid), Y(grid);
         
@@ -753,18 +775,18 @@ public:
           // 1-link contribution
           t = outerProduct(Cshift(Y, mu, 1), X); 
           t -= outerProduct(Cshift(X, mu, 1), Y);
-          PokeIndex<LorentzIndex>(dSdX[inaik], vecdt[l]*t, mu);
+          PokeIndex<LorentzIndex>(dSdX[species], ctx.factor(species)*t, mu);
           
           // 3-link (Naik) contribution
           t = outerProduct(Cshift(Y, mu, 3), X);
           t -= outerProduct(Cshift(X, mu, 3), Y);
-          PokeIndex<LorentzIndex>(dSdWWW[inaik], vecdt[l]*t, mu);
+          PokeIndex<LorentzIndex>(dSdWWW[species], ctx.factor(species)*t, mu);
         }
         ++l;
     } }
     
     // calculate full HISQ force
-    milcSmearDerivative(UdSdU, dSdX, dSdWWW, W, V, U, fatCtx, asqCtx, eps_naiks);
+    milcSmearDerivative(UdSdU, dSdX, dSdWWW, W, V, U, ctx);
   }
 
 };
