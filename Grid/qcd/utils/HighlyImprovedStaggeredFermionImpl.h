@@ -775,12 +775,12 @@ public:
           // 1-link contribution
           t = outerProduct(Cshift(Y, mu, 1), X); 
           t -= outerProduct(Cshift(X, mu, 1), Y);
-          PokeIndex<LorentzIndex>(dSdX[species], ctx.factor(species)*t, mu);
+          PokeIndex<LorentzIndex>(dSdX[species], ctx.factor(l)*t, mu);
           
           // 3-link (Naik) contribution
           t = outerProduct(Cshift(Y, mu, 3), X);
           t -= outerProduct(Cshift(X, mu, 3), Y);
-          PokeIndex<LorentzIndex>(dSdWWW[species], ctx.factor(species)*t, mu);
+          PokeIndex<LorentzIndex>(dSdWWW[species], ctx.factor(l)*t, mu);
         }
         ++l;
     } }
