@@ -147,8 +147,11 @@ public:
     RealD cp = invNc*ctx.cp/actionNorm;
     RealD cr = invNc*ctx.cr/actionNorm;
     RealD cpg = 2.0*invNc*ctx.cpg/actionNorm;
+
     PeriodicBC::Transporters<Gimpl> u(cell, U);
+    
     LatticeComplex action(grid);
+
     GaugeLinkField diag(grid);
     GaugeLinkField ta(grid), tb(grid);
     GaugeLinkField tc(grid), td(grid);
@@ -177,7 +180,6 @@ public:
             td = u.CovShiftFwd(i, u.CovShiftFwd(nu, mu));
             action += cpg*trace(diag - tc*adj(td)); // ++
 
-            /*
             tc = u.CovShiftFwd(nu, u.CovShiftFwd(i, mu));
             td = u.CovShiftFwd(mu, u.CovShiftFwd(i, nu)); 
             action += cpg*trace(diag - tc*adj(td)); // --
@@ -189,7 +191,6 @@ public:
             tc = u.CovShiftFwd(mu, u.CovShiftBck(nu, i));
             td = u.CovShiftFwd(i, u.CovShiftBck(nu, mu));
             action += cpg*trace(diag - tc*adj(td)); // -+
-            */
         } ) 
     } } 
 
@@ -203,10 +204,6 @@ public:
     GaugeField& dSdU, 
     const OneLoopGaugeActionContext ctx
   ) {
-    std::vector<int> mus = {0, 0, 0, 1};
-    std::vector<int> nus = {1, 1, 2, 2};
-    std::vector<int> ros = {2, 3, 3, 3};
-
     RealD cp = 0.5*invNc*ctx.cp;
     RealD cr = 0.5*invNc*ctx.cr;
     RealD cpg = invNc*ctx.cpg;
@@ -217,61 +214,65 @@ public:
     GaugeLinkField ta(grid), tb(grid);
     GaugeLinkField tc(grid), td(grid);
 
-    // plaquette and rectangle
+    std::vector<GaugeLorentzField> sf(Nd, std::vector<GaugeLinkField>(Nd, grid));
+    std::vector<GaugeLorentzField> sb(Nd, std::vector<GaugeLinkField>(Nd, grid));
 
-    for (int mu = 0; mu < Nd; ++mu) dsdu[mu] = Zero();
+    // plaquette + rectangle force; parallelogram preparation
 
     for (int mu = 0; mu < Nd; ++mu) {
+      dsdu[mu] = Zero();
       for (int nu = 0; nu < Nd; ++nu) {
         if (nu == mu) continue;
 
         ta = u.upperStaple(mu, nu);
         tb = u.lowerStaple(mu, nu);
 
-        PLAQUETTE(dsdu[mu] += cp*(ta + tb))
-
-        RECTANGLE( 
+        if ((ctx.cr != 0.0) or (ctx.cpg != 0.0)) {
           tc = u.leftStaple(mu, nu);
           td = u.rightStaple(mu, nu);
+        }
 
-          dsdu[mu] += cr*u.upperStaple(tc, u.link(nu), mu, nu);
-          dsdu[mu] += cr*u.lowerStaple(tc, u.link(nu), mu, nu);
-          dsdu[mu] += cr*u.upperStaple(u.link(nu), td, mu, nu);
-          dsdu[mu] += cr*u.lowerStaple(u.link(nu), td, mu, nu);
-          dsdu[mu] += cr*u.upperStaple(ta, mu, nu);
-          dsdu[mu] += cr*u.lowerStaple(tb, mu, nu);
+        PLAQUETTE(dsdu[mu] += cp*(ta + tb))
+
+        RECTANGLE(
+          dsdu[mu] += cr*u.upperStaple(tc, u.link(nu), mu, nu, false);
+          dsdu[mu] += cr*u.lowerStaple(tc, u.link(nu), mu, nu, false);
+          dsdu[mu] += cr*u.upperStaple(u.link(nu), td, mu, nu, false);
+          dsdu[mu] += cr*u.lowerStaple(u.link(nu), td, mu, nu, false);
+          dsdu[mu] += cr*u.upperStaple(ta, mu, nu, false);
+          dsdu[mu] += cr*u.lowerStaple(tb, mu, nu, false);
+        )
+
+        PARALLELOGRAM(
+          if (mu < nu) continue;
+          sf[mu][nu] = ta;
+          sb[mu][nu] = tb;
+          sf[nu][mu] = td;
+          sb[nu][mu] = tc;
         )
       }
       dsdu[mu] = -Ta(dsdu[mu]*adj(u.link(mu)));
     }
-    dSdU = u.toTightGrid(toGauge(dsdu));
 
-    // parallelogram
+    // parallelogram force
 
     PARALLELOGRAM(
-      for (int mu = 0; mu < Nd; ++mu) dsdu[mu] = Zero();
-
-      for (int idx = 0; idx < mus.size(); ++idx) {
-        int mu = mus[idx]; 
-        int nu = nus[idx]; 
-        int ro = ros[idx];
-
-        tc = u.CovShiftFwd(mu, u.CovShiftFwd(nu, ro));
-        td = u.CovShiftFwd(ro, u.CovShiftFwd(nu, mu));
-        dsdu[mu] += tc*adj(td); // ++ mu derivative
-
-        tc = u.CovShiftFwd(nu, u.CovShiftFwd(ro, u.reverse(mu)));
-        td = u.CovShiftBck(mu, u.CovShiftFwd(ro, nu));
-        dsdu[nu] += tc*adj(td); // ++ nu derivative
-
-        tc = u.CovShiftFwd(ro, u.CovShiftBck(mu, u.reverse(nu)));
-        td = u.CovShiftBck(nu, u.CovShiftBck(mu, ro));
-        dsdu[ro] += tc*adj(td); // ++ ro derivative
+      for (int mu = 0; mu < Nd; ++mu) {
+        ta = Zero();
+        for (int nu = 0; nu < Nd; ++nu) {
+          if (nu == mu) continue;
+          for (int ro = nu + 1; ro < Nd; ++ro) {
+            if ((ro == mu) or (ro == nu)) continue;
+            ta += u.staple(sf[mu][ro], sf[nu][ro], u.link(nu), mu, nu, false);
+            ta += u.staple(sf[mu][ro], u.link(nu), sf[nu][ro], mu, nu, false);
+            ta += u.staple(sb[mu][ro], sb[nu][ro], u.link(nu), mu, nu, false);
+            ta += u.staple(sb[mu][ro], u.link(nu), sb[nu][ro], mu, nu, false);
+        } }
+        dsdu[mu] -= cpg*Ta(ta*adj(u.link(mu)));
       }
-
-      for (int mu = 0; mu < Nd; ++mu) dsdu[mu] = cpg*Ta(dsdu[mu]);
-      dSdU += u.toTightGrid(toGauge(dsdu));
     )
+
+    dSdU = u.toTightGrid(toGauge(dsdu));
   }
 
 public:
