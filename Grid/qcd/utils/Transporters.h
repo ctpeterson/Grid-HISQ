@@ -459,13 +459,34 @@ public:
 
 public:
   inline const GaugeLinkField _staple(
-    const GaugeLinkField& u, 
-    const GaugeLinkField& v,
+    const GaugeLinkField& tu,
+    const GaugeLinkField& bu, 
+    const GaugeLinkField& lv,
+    const GaugeLinkField& rv,
     int mu, 
     int nu
   );
 
 public:
+  inline const GaugeLinkField staple(
+    const GaugeLinkField& tu,
+    const GaugeLinkField& bu, 
+    const GaugeLinkField& lv,
+    const GaugeLinkField& rv,
+    int mu, 
+    int nu,
+    bool correct_boundaries = true
+  );
+
+  inline const GaugeLinkField staple(
+    const GaugeLinkField& u,
+    const GaugeLinkField& lv,
+    const GaugeLinkField& rv,
+    int mu, 
+    int nu,
+    bool correct_boundaries = true
+  );
+
   inline const GaugeLinkField staple(
     const GaugeLinkField& u, 
     const GaugeLinkField& v,
@@ -767,8 +788,10 @@ IMPL(Transporter)::CovShiftIdentBck(const GaugeLinkField& v)
 //-- symmetric staple --//
 
 IMPL(Transporters)::_staple(
-  const GaugeLinkField& u, // mu link
-  const GaugeLinkField& v, // nu link
+  const GaugeLinkField& tu, // top mu link
+  const GaugeLinkField& bu, // bottom mu link
+  const GaugeLinkField& lv, // left nu link
+  const GaugeLinkField& rv, // right nu link
   int mu, 
   int nu
 ) {
@@ -792,8 +815,11 @@ IMPL(Transporters)::_staple(
     GeneralLocalStencilView snu_v = stencil(nu).View(AcceleratorRead);
     GeneralLocalStencilView smunu_v = stencil(mu, nu).View(AcceleratorRead);
     
-    autoView(u_v, u, AcceleratorRead);
-    autoView(v_v, v, AcceleratorRead);
+    autoView(tu_v, tu, AcceleratorRead);
+    autoView(bu_v, bu, AcceleratorRead);
+    autoView(lv_v, lv, AcceleratorRead);
+    autoView(rv_v, rv, AcceleratorRead);
+
     autoView(rs_v, rs, AcceleratorWrite);
 
     accelerator_for(n, _pgrid->oSites(), _pgrid->Nsimd(), {
@@ -804,15 +830,15 @@ IMPL(Transporters)::_staple(
       STENCIL_ENTRY(se_0, smunu_v, 4, n);
 
       // upper staple
-      auto v_x = ACCREAD(v_v, se_0);
-      auto u_xpnu = ACCREAD(u_v, se_pnu);
-      auto v_xpmu = ACCREAD(v_v, se_pmu);
+      auto v_x = ACCREAD(lv_v, se_0);
+      auto u_xpnu = ACCREAD(tu_v, se_pnu);
+      auto v_xpmu = ACCREAD(rv_v, se_pmu);
       auto staple = v_x*u_xpnu*adj(v_xpmu);
 
       // lower staple
-      auto v_xmnu = ACCREAD(v_v, se_mnu);
-      auto u_xmnu = ACCREAD(u_v, se_mnu);
-      auto v_xmnu_pmu = ACCREAD(v_v, se_pmu_mnu);
+      auto v_xmnu = ACCREAD(lv_v, se_mnu);
+      auto u_xmnu = ACCREAD(bu_v, se_mnu);
+      auto v_xmnu_pmu = ACCREAD(rv_v, se_pmu_mnu);
       staple = staple + adj(v_xmnu)*u_xmnu*v_xmnu_pmu;
 
       // full result
@@ -824,31 +850,55 @@ IMPL(Transporters)::_staple(
 }
 
 IMPL(Transporters)::staple(
+  const GaugeLinkField& tu, // top mu link
+  const GaugeLinkField& bu, // bottom mu link
+  const GaugeLinkField& lv, // left nu link
+  const GaugeLinkField& rv, // right nu link
+  int mu, 
+  int nu,
+  bool correct_boundaries
+) {
+  if (correct_boundaries) return exchange(_staple(tu, bu, lv, rv, mu, nu)); 
+  else return _staple(tu, bu, lv, rv, mu, nu); 
+}
+
+IMPL(Transporters)::staple(
+  const GaugeLinkField& u, // mu link
+  const GaugeLinkField& lv, // left nu link
+  const GaugeLinkField& rv, // right nu link
+  int mu, 
+  int nu,
+  bool correct_boundaries
+) {
+  if (correct_boundaries) return exchange(_staple(u, u, lv, rv, mu, nu)); 
+  else return _staple(u, u, lv, rv, mu, nu); 
+}
+
+IMPL(Transporters)::staple(
   const GaugeLinkField& u, // mu link
   const GaugeLinkField& v, // nu link
   int mu, 
   int nu,
   bool correct_boundaries
 ) { 
-  if (correct_boundaries) return exchange(_staple(u, v, mu, nu)); 
-  else return _staple(u, v, mu, nu); 
+  if (correct_boundaries) return exchange(_staple(u, u, v, v, mu, nu)); 
+  else return _staple(u, u, v, v, mu, nu); 
 }
 
-/** @brief calculate symmetric staple */
 IMPL(Transporters)::staple(
   const GaugeLinkField& u, 
   int mu, 
   int nu, 
   bool correct_boundaries
 ) { 
-  if (correct_boundaries) return exchange(_staple(u, link(nu), mu, nu)); 
-  else return _staple(u, link(nu), mu, nu); 
+  if (correct_boundaries) return exchange(_staple(u, u, link(nu), link(nu), mu, nu)); 
+  else return _staple(u, u, link(nu), link(nu), mu, nu); 
 }
 
-/** @brief calculate symmetric staple using buffer fields **/
 IMPL(Transporters)::staple(int mu, int nu, bool correct_boundaries) { 
-  if (correct_boundaries) return exchange(_staple(link(mu), link(nu), mu, nu)); 
-  else return _staple(link(mu), link(nu), mu, nu); 
+  if (correct_boundaries) 
+  return exchange(_staple(link(mu), link(mu), link(nu), link(nu), mu, nu)); 
+  else return _staple(link(mu), link(mu), link(nu), link(nu), mu, nu); 
 }
 
 // -- upper staple --//
