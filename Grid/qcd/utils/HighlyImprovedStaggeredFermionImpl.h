@@ -685,6 +685,7 @@ public:
     GridBase* grid = U.Grid();
     GaugeField tdSdW(grid), dSdW(grid), dSdV(grid), dSdU(grid);
 
+    dSdW = Zero();
     for (int species = 0; species < ctx.numNaiks(); ++species) {
       RealD eps = ctx.epsilon(species);
       HISFContext asqCtx(
@@ -705,7 +706,7 @@ public:
     for (int mu = 0; mu < Nd; ++mu) {
       auto u = PeekIndex<LorentzIndex>(U, mu);
       auto dsdu = PeekIndex<LorentzIndex>(dSdU, mu);
-      PokeIndex<LorentzIndex>(UdSdU, u*adj(dsdu), mu);
+      PokeIndex<LorentzIndex>(UdSdU, -dsdu*adj(u), mu);
     }
   }
 
