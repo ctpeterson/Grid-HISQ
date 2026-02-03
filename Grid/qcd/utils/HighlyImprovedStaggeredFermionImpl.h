@@ -698,13 +698,14 @@ public:
       smearDerivative(tdSdW, adj(dSdX[species]), adj(dSdWWW[species]), W, asqCtx);
       dSdW += tdSdW;
     }
-    
+
     projectionDerivative(dSdV, dSdW, W, V); // no need to pass in context
     smearDerivative(dSdU, dSdV, U, ctx.fat7);
     
     for (int mu = 0; mu < Nd; ++mu) {
       auto u = PeekIndex<LorentzIndex>(U, mu);
-      PokeIndex<LorentzIndex>(UdSdU, u*adj(PeekIndex<LorentzIndex>(dSdU, mu)), mu);
+      auto dsdu = PeekIndex<LorentzIndex>(dSdU, mu);
+      PokeIndex<LorentzIndex>(UdSdU, u*adj(dsdu), mu);
     }
   }
 
@@ -755,33 +756,37 @@ public:
       
       // outer product
       for (int i = 0; i < ctx.order(species); ++i) {
-        FermionField temp(rbgrid);
+        GaugeField tdSdX(grid), tdSdWWW(grid);
         FermionField X(grid), Y(grid);
+        FermionField x(rbgrid), y(rbgrid);
         
         X = Zero(), Y = Zero();
+        x = Zero(), y = Zero();
 
         // extract Xl solution vector
-        temp = Zero();
-        pickCheckerboard(Even, temp, vecx[l]);
-        setCheckerboard(X, temp);
+        pickCheckerboard(Even, x, vecx[l]);
+        setCheckerboard(X, x);
 
         // extract Yl solution vector
-        temp = Zero();
-        pickCheckerboard(Odd, temp, vecx[l]);
-        setCheckerboard(Y, temp);
+        pickCheckerboard(Odd, y, vecx[l]);
+        setCheckerboard(Y, y);
 
         // accumulate outer products
         for (int mu = 0; mu < Nd; ++mu) {
           // 1-link contribution
           t = outerProduct(Cshift(Y, mu, 1), X); 
           t -= outerProduct(Cshift(X, mu, 1), Y);
-          PokeIndex<LorentzIndex>(dSdX[species], ctx.factor(l)*t, mu);
+          PokeIndex<LorentzIndex>(tdSdX, ctx.factor(l)*t, mu);
           
           // 3-link (Naik) contribution
           t = outerProduct(Cshift(Y, mu, 3), X);
           t -= outerProduct(Cshift(X, mu, 3), Y);
-          PokeIndex<LorentzIndex>(dSdWWW[species], ctx.factor(l)*t, mu);
+          PokeIndex<LorentzIndex>(tdSdWWW, ctx.factor(l)*t, mu);
         }
+
+        // increment
+        dSdX[species] += tdSdX;
+        dSdWWW[species] += tdSdWWW;
         ++l;
     } }
     
