@@ -49,6 +49,8 @@ directory
  *   Discovery through Advanced Computing (SciDAC) program.
 */
 
+#include <cassert>
+
 #pragma once
 
 #ifndef QCD_UTILS_UNITARYPROJECTION_H
@@ -57,6 +59,77 @@ directory
 NAMESPACE_BEGIN(Grid);
 
 const RealD SMALL = std::numeric_limits<double>::epsilon();
+const RealD LARGE = 1./SMALL;
+
+//
+// useful data structures
+//
+
+enum UnitaryProjectionMethod {
+  CayleyHamiltonProjection,
+  SingularValueDecompositionProjection
+};
+
+enum UnitaryProjectionDerivativeMethod {
+  MIMDCollaborationDerivative,
+  JinOsbornDerivative
+};
+
+struct UnitaryProjectionContext {
+  UnitaryProjectionMethod projectionMethod;
+  UnitaryProjectionDerivativeMethod derivativeMethod;
+
+  RealD derivativeEigenvalueCutoff = SMALL;
+  RealD relativeSVDTolerance = LARGE;
+  RealD absoluteSVDTolerance = SMALL;
+
+  bool backupSVD = false;
+  bool svdOnlyDerivative = false;
+
+  UnitaryProjectionContext(
+    UnitaryProjectionMethod projectionMethod = CayleyHamiltonProjection,
+    UnitaryProjectionDerivativeMethod derivativeMethod = JinOsbornDerivative
+  ): projectionMethod(projectionMethod), derivativeMethod(derivativeMethod) { }
+  
+  UnitaryProjectionContext(
+    UnitaryProjectionDerivativeMethod derivativeMethod = JinOsbornDerivative,
+    UnitaryProjectionMethod projectionMethod = CayleyHamiltonProjection
+  ): projectionMethod(projectionMethod), derivativeMethod(derivativeMethod) { }
+  
+  void setDerivativeEigenvalueCutoff(RealD cutoff) { 
+    std::string err = "Cayley-Hamilton derivative only supports eigenvalue cutoff";
+    assert(derivativeMethod == MIMDCollaborationDerivative && err.c_str());
+    derivativeEigenvalueCutoff = cutoff; 
+  }
+
+  void setSVDOnlyDerivative(bool svdOnly) { 
+    std::string err = "backup SVD only supported for Cayley-Hamilton projection";
+    assert(derivativeMethod == MIMDCollaborationDerivative && err.c_str());
+    svdOnlyDerivative = svdOnly; 
+  }
+
+  void setBackupSVD(bool backup) { 
+    std::string err = "backup SVD only supported for Cayley-Hamilton projection";
+    assert(projectionMethod == CayleyHamiltonProjection && err.c_str());
+    backupSVD = backup; 
+  }
+
+  void setRelativeSVDTolerance(RealD tol) { 
+    std::string err = "backup SVD only supported for Cayley-Hamilton projection";
+    assert(projectionMethod == CayleyHamiltonProjection && err.c_str());
+    relativeSVDTolerance = tol; 
+  }
+
+  void setAbsoluteSVDTolerance(RealD tol) { 
+    std::string err = "backup SVD only supported for Cayley-Hamilton projection";
+    assert(projectionMethod == CayleyHamiltonProjection && err.c_str());
+    absoluteSVDTolerance = tol; 
+  }
+};
+
+//
+// UnitaryProjection class
+//
 
 template<class Gimpl> 
 class UnitaryProjection: public Gimpl {
@@ -71,20 +144,15 @@ private:
   typedef typename Eigen::Matrix<std::complex<double>, Nc, Nc> EigenScalarMatrix;
   typedef typename Eigen::JacobiSVD<EigenScalarMatrix> EigenSVD;
 
-  RealD cutoff, relsvdtol, abssvdtol;
-  bool backupSVD;
+  UnitaryProjectionContext ctx;
 
 public:
-  UnitaryProjection(
-    RealD cutoff = SMALL, 
-    bool backupSVD = false,
-    RealD relsvdtol = 1e-8,
-    RealD abssvdtol = 1e-8
-  ): 
-    cutoff(cutoff), 
-    backupSVD(backupSVD), 
-    relsvdtol(relsvdtol), 
-    abssvdtol(abssvdtol) 
+  UnitaryProjection() { 
+    assert(Nc == 3 && "unitary projection only supported for SU(3) for now");
+    ctx = UnitaryProjectionContext(CayleyHamiltonProjection, JinOsbornDerivative);
+  }
+
+  UnitaryProjection(UnitaryProjectionContext ctx): ctx(ctx)
   { assert(Nc == 3 && "unitary projection only supported for Nc = 3 for now"); }
 
 private:
@@ -171,7 +239,45 @@ private:
 
   void _bound(LatticeComplex& x) {
     LatticeReal xr = toReal(x);
-    x = where(xr < cutoff, x + cutoff, x);
+    x = where(
+      xr < ctx.derivativeEigenvalueCutoff, 
+      x + ctx.derivativeEigenvalueCutoff, 
+      x
+    );
+  }
+
+  void _eigs3SVD(
+    LatticeComplex& e0,
+    LatticeComplex& e1,
+    LatticeComplex& e2,
+    const GaugeLinkField& u
+  ) {
+    GridBase* grid = u.Grid();
+    {
+      autoView(u_v, u, CpuRead);
+
+      autoView(e0_v, e0, CpuWrite);
+      autoView(e1_v, e1, CpuWrite);
+      autoView(e2_v, e2, CpuWrite);
+
+      thread_for(n, grid->lSites(), {
+        Coordinate lcoor;
+        GridScalarMatrix gu;
+          
+        peekLocalSite(gu, u_v, lcoor);
+        EigenSVD svd(toEigen(gu));
+
+        auto singularValues = svd.singularValues();
+
+        std::complex<RealD> locale0 = singularValues(1)*singularValues(1);
+        std::complex<RealD> locale1 = singularValues(0)*singularValues(0);
+        std::complex<RealD> locale2 = singularValues(2)*singularValues(2);
+
+        pokeLocalSite(locale0, e0_v, lcoor);
+        pokeLocalSite(locale1, e1_v, lcoor);
+        pokeLocalSite(locale2, e2_v, lcoor);
+      });
+    }
   }
 
   void _eigs3(
@@ -205,11 +311,10 @@ private:
     f1 = f0 + a1*cos(a2);
     f2 = f0 + a1*cos(a2 + k3);
     f0 += a1*cos(a2 - k3);
-    _bound(f0), _bound(f1), _bound(f2);
   }
 
 private:
-  void _projectU3(GaugeLinkField& v, const GaugeLinkField& u) {
+  void _projectU3CH(GaugeLinkField& v, const GaugeLinkField& u) {
     /**
      * @brief U(3) unitary projection via Cayley-Hamilton or SVD
      * @author Curtis Taylor Peterson
@@ -219,7 +324,8 @@ private:
      * by Eigen. For details about the Cayley-Hamilton approach, see the references
      * provided above; namely the OG paper by Hasenfratz et al and later work by the 
      * MILC collaboration. Please note that this method is modelled after the approach
-     * taken in Quantum EXpressions by James Osborn and Xiao-Yong Jin.
+     * taken in Quantum EXpressions by James Osborn and Xiao-Yong Jin, aside from the
+     * singular value decomposion.
      */
     GridBase *grid = u.Grid();
     GaugeLinkField unity(grid), q(grid), q2(grid);
@@ -254,7 +360,10 @@ private:
 
     // Jacobi-based singular value decomposition: fallback for ill-conditioned links
     // conditions for falling back on SVD: https://doi.org/10.1103/PhysRevD.75.054502
-    if (backupSVD) {{
+    if (ctx.backupSVD) {{
+      RealD relativeSVDTolerance = ctx.relativeSVDTolerance;
+      RealD absoluteSVDTolerance = ctx.absoluteSVDTolerance;
+
       autoView(detA_v, detA, CpuRead);
       autoView(detB_v, detB, CpuRead);
 
@@ -281,11 +390,11 @@ private:
         peekLocalSite(locale1, e1_v, lcoor);
         peekLocalSite(locale2, e2_v, lcoor);
 
-        detDiffTooLarge = abs((localDetA - localDetB)/localDetB) > relsvdtol;
+        detDiffTooLarge = abs((localDetA - localDetB)/localDetB) > relativeSVDTolerance;
 
-	      e0TooSmall = abs(locale0) < abssvdtol;
-        e1TooSmall = abs(locale1) < abssvdtol;
-        e2TooSmall = abs(locale2) < abssvdtol;
+	      e0TooSmall = abs(locale0) < absoluteSVDTolerance;
+        e1TooSmall = abs(locale1) < absoluteSVDTolerance;
+        e2TooSmall = abs(locale2) < absoluteSVDTolerance;
 
         if (detDiffTooLarge or e0TooSmall or e1TooSmall or e2TooSmall) {
           GridScalarMatrix gu;
@@ -300,7 +409,46 @@ private:
     }}
   }
 
-  void _derivativeU3(
+  void _projectU3SVD(GaugeLinkField& v, const GaugeLinkField& u) {
+    /**
+     * @brief U(3) unitary projection via SVD
+     * @author Curtis Taylor Peterson
+     * @details
+     * This method implements a U(3) projection of a general complex 3x3 matrix 
+     * using the Jacobi singular value decomposition implemented by Eigen.
+     */
+    GridBase *grid = u.Grid();
+
+    {
+      autoView(u_v, u, CpuRead);
+      autoView(v_v, v, CpuWrite);
+
+      // Jacobi-based singular value decomposition
+      thread_for(n, grid->lSites(), {
+        Coordinate lcoor;
+        GridScalarMatrix gu;
+        EigenScalarMatrix eu, ev = EigenScalarMatrix::Zero();
+        
+        grid->LocalIndexToLocalCoor(n, lcoor);
+
+        peekLocalSite(gu, u_v, lcoor);
+        EigenSVD svd(toEigen(gu), Eigen::ComputeFullU | Eigen::ComputeFullV);
+        ev = svd.matrixU() * svd.matrixV().adjoint();
+        pokeLocalSite(toGrid(ev), v_v, lcoor);
+      });
+    }
+  }
+
+  void _projectU3(GaugeLinkField& v, const GaugeLinkField& u) {
+    switch (ctx.projectionMethod) {
+      case CayleyHamiltonProjection: _projectU3CH(v, u); break;
+      case SingularValueDecompositionProjection: _projectU3SVD(v, u); break;
+      default: assert(false && "invalid unitary projection method");
+    }
+  }
+
+public:
+  void _derivativeU3JO(
     GaugeLinkField& dvdu, 
     const GaugeLinkField& dzdv,
     const GaugeLinkField& v,
@@ -339,6 +487,137 @@ private:
     dvdu -= u*t2;            //
   }
 
+  void _derivativeU3MILC(
+    GaugeLinkField& dvdu, 
+    const GaugeLinkField& dzdv,
+    const GaugeLinkField& u
+  ) {
+    /**
+     * @brief Derivative of unitary projection via Cayley-Hamilton
+     * @author David Clarke and Curtis Taylor Peterson
+     * @details
+     * This method implements the derivative of the U(3) projection using the 
+     * Cayley-Hamilton approach. For details about this approach, see the references
+     * provided above; namely the OG paper by Hasenfratz et al and later work by the 
+     * MILC collaboration.
+     * 
+     * See _derivativeU3JO for description of derivative.
+     */
+    std::string err = "svdOnlyDerivative = true and backupSVD = true incompatible";
+    assert((!(ctx.svdOnlyDerivative && ctx.backupSVD)) && err.c_str());
+
+    GridBase* grid = u.Grid();
+    GaugeLinkField unity(grid), q(grid), q2(grid);
+    GaugeLinkField d0(grid), d1(grid), d2(grid);
+    LatticeComplex e0(grid), e1(grid), e2(grid);
+    LatticeComplex f0(grid), f1(grid), f2(grid);
+    LatticeComplex unit(grid), detA(grid), detB(grid), relDetDiff(grid);
+
+    // eigenvalues of q = u†u
+    unit = 1.0, unity = 1.0;
+    q = adj(u)*u; 
+    q2 = q*q;
+    if (ctx.svdOnlyDerivative) _eigs3SVD(e0, e1, e2, u); 
+    else {
+      _eigs3(e0, e1, e2, q, q2);
+      if (ctx.backupSVD) { 
+        detA = Determinant(q); 
+        detB = e0*e1*e2;
+        relDetDiff = (detA - detB)/detB; 
+      }
+    }
+
+    // Jacobi-based singular value decomposition: fallback for ill-conditioned links
+    // conditions for falling back on SVD: https://doi.org/10.1103/PhysRevD.75.054502
+    // Replaces eigenvalues of Vdag V wtih squared eigenvalues of SVD if conditions are met
+    if (ctx.backupSVD) {
+      LatticeComplex oe0 = e0, oe1 = e1, oe2 = e2;
+      RealD relativeSVDTolerance = ctx.relativeSVDTolerance;
+      RealD absoluteSVDTolerance = ctx.absoluteSVDTolerance;
+
+      autoView(u_v, u, CpuRead);
+
+      autoView(relDetDiff_v, relDetDiff, CpuRead);
+
+      autoView(oe0_v, oe0, CpuRead);
+      autoView(oe1_v, oe1, CpuRead);
+      autoView(oe2_v, oe2, CpuRead);
+
+      autoView(e0_v, e0, CpuWrite);
+      autoView(e1_v, e1, CpuWrite);
+      autoView(e2_v, e2, CpuWrite);
+
+      thread_for(n, grid->lSites(), { // TODO: mask
+        bool detDiffTooLarge, e0TooSmall, e1TooSmall, e2TooSmall;
+        Coordinate lcoor;
+        GridScalar localRelDetDiff;
+        GridScalar localoe0, localoe1, localoe2;
+
+        grid->LocalIndexToLocalCoor(n, lcoor);
+
+        peekLocalSite(localRelDetDiff, relDetDiff_v, lcoor);
+
+	      peekLocalSite(localoe0, oe0_v, lcoor);
+        peekLocalSite(localoe1, oe1_v, lcoor);
+        peekLocalSite(localoe2, oe2_v, lcoor);
+
+        detDiffTooLarge = abs(localRelDetDiff) > relativeSVDTolerance;
+	      e0TooSmall = abs(localoe0) < absoluteSVDTolerance;
+        e1TooSmall = abs(localoe1) < absoluteSVDTolerance;
+        e2TooSmall = abs(localoe2) < absoluteSVDTolerance;
+
+        // Eqn (C22) of https://doi.org/10.1103/PhysRevD.75.054502
+        if (detDiffTooLarge or e0TooSmall or e1TooSmall or e2TooSmall) {
+          GridScalarMatrix gu;
+          EigenScalarMatrix eu, ev = EigenScalarMatrix::Zero();
+          
+          peekLocalSite(gu, u_v, lcoor);
+          EigenSVD svd(toEigen(gu));
+
+          auto singularValues = svd.singularValues();
+
+          std::complex<RealD> locale0 = singularValues(1)*singularValues(1);
+          std::complex<RealD> locale1 = singularValues(0)*singularValues(0);
+          std::complex<RealD> locale2 = singularValues(2)*singularValues(2);
+
+          pokeLocalSite(locale0, e0_v, lcoor);
+          pokeLocalSite(locale1, e1_v, lcoor);
+          pokeLocalSite(locale2, e2_v, lcoor);
+        }
+      });
+    }
+
+    // Eqn (C22) of https://doi.org/10.1103/PhysRevD.75.054502; "force filter"
+    _bound(e0), _bound(e1), _bound(e2);
+
+    // Cayley-Hamilton: "u, v, w" coefficients [Eqn. C6 of PRD(75)054502]
+    f0 = sqrt(e0), f1 = sqrt(e1), f2 = sqrt(e2);
+    e0 = f0 + f1 + f2;
+    e1 = f0*f1;
+    e2 = e1*f2;
+    e1 += f0*f2 + f1*f2;
+
+    // Cayley-Hamilton: "f0, f1, f2" coefficients [Eqn. C7 of PRD(75)054502]
+    f2 = e2*(e0*e1 - e2);
+    f2 = unit/f2;
+    f1 = e0*e0;
+    f0 = e0*e1*e1 - e2*(f1 + e1);
+    f0 *= f2;
+    f1 = e0*(2.0*e1 - f1) - e2;
+    f1 *= f2;
+    f2 *= e0;
+
+    // calculate derivative
+    d0 = f0*unity + f1*q + f2*q2; // (u'u)^(-1/2)
+    _inverse3(d1, d0);            // (u'u)^(1/2)
+    d2 = u*d0;                    // u (u'u)^(-1/2)
+    dvdu = dzdv*d0;
+    d0 = adj(d2)*dvdu;
+    _sylvester3(d2, d1, d0);
+    d0 = d2 + adj(d2);
+    dvdu -= u*d0;
+  }
+
 public:
   void project(GaugeLinkField& v, const GaugeLinkField& u) { _projectU3(v, u); }
 
@@ -351,12 +630,21 @@ public:
   }
 
   void derivative(GaugeField& dVdU, const GaugeField& dZdV, const GaugeField& U) {
-    GaugeLinkField dvdu(U.Grid());
-    GaugeLinkField u(U.Grid()), v(U.Grid());
+    GaugeLinkField dzdv(U.Grid()), dvdu(U.Grid());
+    GaugeLinkField u(U.Grid());
     for (int mu = 0; mu < Nd; ++mu){
       u = PeekIndex<LorentzIndex>(U, mu);
-      _projectU3(v, u);
-      _derivativeU3(dvdu, PeekIndex<LorentzIndex>(dZdV, mu), v, u);
+      dzdv = PeekIndex<LorentzIndex>(dZdV, mu);
+      switch (ctx.derivativeMethod) {
+        case MIMDCollaborationDerivative: _derivativeU3MILC(dvdu, dzdv, u); break;
+        case JinOsbornDerivative: {
+          GaugeLinkField v(U.Grid());
+          _projectU3(v, u);
+          _derivativeU3JO(dvdu, dzdv, v, u);
+          break;
+        }
+        default: assert(false && "invalid unitary projection derivative method");
+      } 
       PokeIndex<LorentzIndex>(dVdU, dvdu, mu);
     }
   }
@@ -367,11 +655,12 @@ public:
     const GaugeField& V, 
     const GaugeField& U
   ) {
-    // be careful w/ using this method: you want to make sure 
-    // that cutoff used here is consistent w/ cutoff used to get v
+    std::string err = "explicit specification of reunitarized link only supported for Jin-Osborn derivative";
+    assert(ctx.derivativeMethod == JinOsbornDerivative && err.c_str());
+
     GaugeLinkField dvdu(U.Grid());
     for (int mu = 0; mu < Nd; ++mu){
-      _derivativeU3(
+      _derivativeU3JO(
         dvdu, 
         PeekIndex<LorentzIndex>(dZdV, mu), 
         PeekIndex<LorentzIndex>(V, mu),

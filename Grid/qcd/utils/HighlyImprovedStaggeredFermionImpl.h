@@ -127,6 +127,10 @@ const double // unitary projection parameters
   RELBACKUPSVDTOLERANCE = 1e-8, // relative tolerance for triggering backup SVD
   ABSBACKUPSVDTOLERANCE = 1e-8; // absolute tolerance for triggering backup SVD
 
+//
+// useful data structures
+//
+
 struct HISFContext {
   /**
    * @brief Context for highly improved staggered fermion smearing and projection
@@ -143,6 +147,7 @@ struct HISFContext {
 
   // unitary projection parameters
   bool backupSVD;
+  bool svdOnly;
   RealD relSVDTolerance;
   RealD absSVDTolerance;
   RealD eigenCutoff;
@@ -156,6 +161,7 @@ struct HISFContext {
     RealD c3,
     RealD lepage, 
     RealD naik,
+    bool svdOnly,
     bool backupSVD,
     RealD relSVDTolerance,
     RealD absSVDTolerance,
@@ -179,6 +185,7 @@ struct HISFContext {
     c0(c0), c1(c1), c2(c2), c3(c3), lepage(0.0), naik(0.0) { };
   
   HISFContext(
+    bool svdOnly,
     bool backupSVD, 
     RealD relSVDTolerance, 
     RealD absSVDTolerance, 
@@ -457,22 +464,22 @@ public:
   }
 
   void project(GaugeField& V, const GaugeField& U, const HISFContext ctx) { 
-    UnitaryProjection<Gimpl> projection(
-      ctx.eigenCutoff, 
-      ctx.backupSVD, 
-      ctx.relSVDTolerance,
-      ctx.absSVDTolerance
+    UnitaryProjectionContext projCtx(
+      ctx.svdOnly ? SingularValueDecompositionProjection : CayleyHamiltonProjection
     );
+    projCtx.setBackupSVD(ctx.backupSVD);
+    projCtx.setRelativeSVDTolerance(ctx.relSVDTolerance);
+    projCtx.setAbsoluteSVDTolerance(ctx.absSVDTolerance);
+    UnitaryProjection<Gimpl> projection(projCtx);
     projection.project(V, U);
   }
 
-  void project(GaugeField& V, const GaugeField& U, bool forDerivative = false) {
-    UnitaryProjection<Gimpl> projection(
-      when(forDerivative, REUNITDERIVCUTOFF, REUNITCUTOFF), 
-      BACKUPSVD, 
-      RELBACKUPSVDTOLERANCE,
-      ABSBACKUPSVDTOLERANCE
-    );
+  void project(GaugeField& V, const GaugeField& U) { 
+    UnitaryProjectionContext projCtx(CayleyHamiltonProjection);
+    projCtx.setBackupSVD(BACKUPSVD);
+    projCtx.setRelativeSVDTolerance(RELBACKUPSVDTOLERANCE);
+    projCtx.setAbsoluteSVDTolerance(ABSBACKUPSVDTOLERANCE);
+    UnitaryProjection<Gimpl> projection(projCtx);
     projection.project(V, U);
   }
 
@@ -639,12 +646,13 @@ public:
     const GaugeField& U,
     const HISFContext ctx
   ) {
-    UnitaryProjection<Gimpl> projection(
-      ctx.eigenCutoff, 
-      ctx.backupSVD, 
-      ctx.relSVDTolerance,
-      ctx.absSVDTolerance
-    );
+    UnitaryProjectionContext projCtx(MIMDCollaborationDerivative);
+    projCtx.setDerivativeEigenvalueCutoff(ctx.eigenCutoff);
+    projCtx.setSVDOnlyDerivative(ctx.svdOnly);
+    projCtx.setBackupSVD(ctx.backupSVD);
+    projCtx.setRelativeSVDTolerance(ctx.relSVDTolerance);
+    projCtx.setAbsoluteSVDTolerance(ctx.absSVDTolerance);
+    UnitaryProjection<Gimpl> projection(projCtx);
     projection.derivative(dVdU, dZdV, U); 
   }
 
@@ -652,14 +660,14 @@ public:
     GaugeField& dVdU, 
     const GaugeField& dZdV, 
     const GaugeField& U
-  ) {
-    UnitaryProjection<Gimpl> projection(
-      REUNITDERIVCUTOFF, 
-      BACKUPSVD, 
-      RELBACKUPSVDTOLERANCE,
-      ABSBACKUPSVDTOLERANCE
-    );
-    projection.derivative(dVdU, dZdV, U);
+  ) { 
+    UnitaryProjectionContext projCtx(MIMDCollaborationDerivative);
+    projCtx.setDerivativeEigenvalueCutoff(REUNITDERIVCUTOFF);
+    projCtx.setBackupSVD(BACKUPSVD);
+    projCtx.setRelativeSVDTolerance(RELBACKUPSVDTOLERANCE);
+    projCtx.setAbsoluteSVDTolerance(ABSBACKUPSVDTOLERANCE);
+    UnitaryProjection<Gimpl> projection(projCtx);
+    projection.derivative(dVdU, dZdV, U); 
   }
 
   void projectionDerivative(
@@ -667,8 +675,9 @@ public:
     const GaugeField& dZdV, 
     const GaugeField& V,
     const GaugeField& U
-  ) { // projection constructor inputs don't matter because no projection performed
-    UnitaryProjection<Gimpl> projection(1e-20, true, 1e-8, 1e-8);
+  ) { 
+    UnitaryProjectionContext projCtx(JinOsbornDerivative);
+    UnitaryProjection<Gimpl> projection(projCtx);
     projection.derivative(dVdU, dZdV, V, U); 
   }
 
@@ -700,7 +709,7 @@ public:
       dSdW += tdSdW;
     }
 
-    projectionDerivative(dSdV, dSdW, W, V); // no need to pass in context
+    projectionDerivative(dSdV, dSdW, V, ctx.fat7);
     smearDerivative(dSdU, dSdV, U, ctx.fat7);
     
     for (int mu = 0; mu < Nd; ++mu) {
