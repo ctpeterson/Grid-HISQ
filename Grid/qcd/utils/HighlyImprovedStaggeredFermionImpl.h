@@ -166,13 +166,13 @@ struct HISFContext {
     RealD relSVDTolerance,
     RealD absSVDTolerance,
     RealD eigenCutoff
-  ):
-    c0(c0), 
+  ):c0(c0), 
     c1(c1), 
     c2(c2), 
     c3(c3),
     lepage(lepage), 
     naik(naik),
+    svdOnly(svdOnly),
     backupSVD(backupSVD),
     relSVDTolerance(relSVDTolerance),
     absSVDTolerance(absSVDTolerance),
@@ -190,7 +190,7 @@ struct HISFContext {
     RealD relSVDTolerance, 
     RealD absSVDTolerance, 
     RealD eigenCutoff
-  ):
+  ):svdOnly(svdOnly),
     backupSVD(backupSVD), 
     relSVDTolerance(relSVDTolerance), 
     absSVDTolerance(absSVDTolerance), 
@@ -467,7 +467,7 @@ public:
     UnitaryProjectionContext projCtx(
       ctx.svdOnly ? SingularValueDecompositionProjection : CayleyHamiltonProjection
     );
-    projCtx.setBackupSVD(ctx.backupSVD);
+    if (!(ctx.svdOnly)) projCtx.setBackupSVD(ctx.backupSVD);
     projCtx.setRelativeSVDTolerance(ctx.relSVDTolerance);
     projCtx.setAbsoluteSVDTolerance(ctx.absSVDTolerance);
     UnitaryProjection<Gimpl> projection(projCtx);
