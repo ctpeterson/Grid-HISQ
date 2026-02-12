@@ -33,6 +33,7 @@ directory
  */
 
 #pragma once 
+#include <Grid/perfmon/Tracing.h>
 
 #ifndef QCD_UTILS_PERIODIC_TRANSPORTERS_H
 #define QCD_UTILS_PERIODIC_TRANSPORTERS_H
@@ -307,8 +308,11 @@ public:
   */
 
   /** @brief full halo exchange */
-  inline GaugeLinkField exchange(const GaugeLinkField& u) 
-  { return toPaddedGrid(toTightGrid(u)); }
+  inline GaugeLinkField exchange(const GaugeLinkField& u) { 
+    tracePush("Transporters::exchange");
+    return toPaddedGrid(toTightGrid(u)); 
+    tracePop("Transporters::exchange");
+  }
 
   /** @brief update followed by halo exchange */
   void append(GaugeLinkField& u, const GaugeLinkField& du) 
@@ -698,6 +702,7 @@ IMPL(Transporter)::CovShift(
   GridBase* pgrid = u.Grid();
   GaugeLinkField f(pgrid);
 
+  tracePush("Transporter::CovShift");
   ACCELERATOR_SCOPE(
     GeneralLocalStencilView s_v = stencil().View(AcceleratorRead);
     autoView(v_v, v, AcceleratorRead);
@@ -714,6 +719,7 @@ IMPL(Transporter)::CovShift(
       else ACCWRITE(f_v[n], adj(ACCREAD(u_v, se))*ACCREAD(v_v, se));
     });
   )
+  tracePop("Transporter::CovShift");
 
   return f;
 }
@@ -755,6 +761,7 @@ IMPL(Transporter)::Cshift(const GaugeLinkField& u, TransportHeading heading) {
   GridBase* pgrid = u.Grid();
   GaugeLinkField f(pgrid);
 
+  tracePush("Transporter::Cshift");
   ACCELERATOR_SCOPE(
     GeneralLocalStencilView s_v = stencil().View(AcceleratorRead);
     autoView(u_v, u, AcceleratorRead);
@@ -765,6 +772,7 @@ IMPL(Transporter)::Cshift(const GaugeLinkField& u, TransportHeading heading) {
       ACCWRITE(f_v[n], ACCREAD(u_v, se));
     });
   )
+  tracePop("Transporter::Cshift");
 
   return f;
 }
@@ -810,6 +818,7 @@ IMPL(Transporters)::_staple(
    */ 
   GaugeLinkField rs(_pgrid);
 
+  tracePush("Transporters::_staple");
   ACCELERATOR_SCOPE(
     GeneralLocalStencilView smu_v = stencil(mu).View(AcceleratorRead);
     GeneralLocalStencilView snu_v = stencil(nu).View(AcceleratorRead);
@@ -845,6 +854,7 @@ IMPL(Transporters)::_staple(
       ACCWRITE(rs_v[n], staple);
     });
   )
+  tracePop("Transporters::_staple");
 
   return rs;
 }
@@ -921,6 +931,7 @@ IMPL(Transporters)::_upperStaple(
    */ 
   GaugeLinkField rs(_pgrid);
 
+  tracePush("Transporters::_upperStaple");
   ACCELERATOR_SCOPE(
     GeneralLocalStencilView smu_v = stencil(mu).View(AcceleratorRead);
     GeneralLocalStencilView snu_v = stencil(nu).View(AcceleratorRead);
@@ -942,6 +953,7 @@ IMPL(Transporters)::_upperStaple(
       ACCWRITE(rs_v[n], v_x*u_xpnu*adj(v_xpmu));
     });
   )
+  tracePop("Transporters::_upperStaple");
 
   return rs;
 }
@@ -1007,6 +1019,7 @@ IMPL(Transporters)::_lowerStaple(
    */ 
   GaugeLinkField rs(_pgrid);
 
+  tracePush("Transporters::_lowerStaple");
   ACCELERATOR_SCOPE(
     GeneralLocalStencilView smu_v = stencil(mu).View(AcceleratorRead);
     GeneralLocalStencilView snu_v = stencil(nu).View(AcceleratorRead);
@@ -1027,6 +1040,7 @@ IMPL(Transporters)::_lowerStaple(
       ACCWRITE(rs_v[n], adj(v_xmnu)*u_xmnu*v_xmnu_pmu);
     });
   )
+  tracePop("Transporters::_lowerStaple");
 
   return rs;
 }
@@ -1198,6 +1212,7 @@ IMPL(Transporters)::_stapleDerivative(
    */
   GaugeLinkField rds(_pgrid);
 
+  tracePush("Transporters::_stapleDerivative");
   ACCELERATOR_SCOPE(
     GeneralLocalStencilView smu_v = stencil(mu).View(AcceleratorRead);
     GeneralLocalStencilView snu_v = stencil(nu).View(AcceleratorRead);
@@ -1241,6 +1256,7 @@ IMPL(Transporters)::_stapleDerivative(
       ACCWRITE(rds_v[n], staple);
     });
   )
+  tracePop("Transporters::_stapleDerivative");
   
   return rds;
 }

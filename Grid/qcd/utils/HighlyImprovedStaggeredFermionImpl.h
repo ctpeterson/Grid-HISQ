@@ -64,6 +64,8 @@ directory
 #include <Grid/qcd/utils/UnitaryProjection.h>
 #include <Grid/qcd/action/ActionParams.h>
 
+#include <Grid/perfmon/Tracing.h>
+
 NAMESPACE_BEGIN(Grid);
 
 //
@@ -432,6 +434,7 @@ public:
     GaugeLinkField s3(grid), s5(grid);
     
     // 1-, 3-, 5-, and 7-link terms + lepage
+    tracePush("HighlyImprovedStaggeredFermionImpl::smear");
     HISQLOOP0( // Eqn 5a
       x[mu] = (ctx.c0 - 6.0*ctx.lepage)*w.link(mu);
       HISQLOOP1( // Eqn 5b
@@ -448,6 +451,7 @@ public:
     // Naik term
     HISQNAIK(x[mu] = ctx.naik*w.CovShiftFwd(mu, w.CovShiftFwd(mu), false))
     if (ctx.naik != 0.0) WWW = w.toTightGrid(toGauge(x));
+    tracePop("HighlyImprovedStaggeredFermionImpl::smear");
   }
 
   void smear(GaugeField& X, GaugeField& WWW, const GaugeField& W) {
@@ -467,7 +471,7 @@ public:
     UnitaryProjectionContext projCtx(
       ctx.svdOnly ? SingularValueDecompositionProjection : CayleyHamiltonProjection
     );
-    if (!(ctx.svdOnly)) projCtx.setBackupSVD(ctx.backupSVD);
+    if (!ctx.svdOnly) projCtx.setBackupSVD(ctx.backupSVD);
     projCtx.setRelativeSVDTolerance(ctx.relSVDTolerance);
     projCtx.setAbsoluteSVDTolerance(ctx.absSVDTolerance);
     UnitaryProjection<Gimpl> projection(projCtx);
@@ -572,6 +576,7 @@ public:
     GaugeLinkField dnu(grid), di(grid), dj(grid);
 
     // fat7 + lepage (lepage won't execute if lepage == 0.0)
+    tracePush("HighlyImprovedStaggeredFermionImpl::smearDerivative");
     HISQLOOP0( 
       dxdu[mu] = (ctx.c0 - 6.0*ctx.lepage)*dxdw[mu];
       HISQLOOP1(
@@ -613,6 +618,7 @@ public:
         } else snu = w.CovShiftIdentBck(mu, w.exchange(adj(sj)*snu*si), false);
         dxdu[mu] += ctx.naik*adj(snu);
     } )
+    tracePop("HighlyImprovedStaggeredFermionImpl::smearDerivative");
 
     // extract from padded grid
     dXdU = w.toTightGrid(toGauge(dxdu));

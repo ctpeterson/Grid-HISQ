@@ -64,6 +64,7 @@ See the full license in the file "LICENSE" in the top level distribution directo
 #define QCD_PERIODIC_PLAQ_PLUS_RECTANGLE_PLUS_PARALLELOGRAM_GAUGE_ACTION_H
 
 #include <Grid/qcd/utils/Transporters.h>
+#include <Grid/perfmon/Tracing.h>
 
 NAMESPACE_BEGIN(Grid);
 
@@ -221,6 +222,7 @@ public:
     GaugeLinkField ta(grid), tb(grid);
     GaugeLinkField tc(grid), td(grid);
 
+    tracePush("PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction::S");
     diag = 1.0, action = 0.0;
     for (int mu = 1; mu < Nd; ++mu) {
       for (int nu = 0; nu < mu; ++nu) {
@@ -258,9 +260,10 @@ public:
             action += cpg*trace(diag - tc*adj(td)); // -+
         } ) 
     } } 
-
     auto actionSumTensor = sum(u.toTightGrid(action));
     auto actionSum = TensorRemove(actionSumTensor);
+    tracePop("PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction::S");
+    
     return actionNorm*actionSum.real();
   }
 
@@ -298,7 +301,7 @@ public:
     std::vector<GaugeLorentzField> sb(Nd, GaugeLorentzField(Nd, grid));
 
     // plaquette + rectangle force; parallelogram preparation
-
+    tracePush("PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction::deriv");
     for (int mu = 0; mu < Nd; ++mu) {
       dsdu[mu] = Zero();
       for (int nu = 0; nu < Nd; ++nu) {
@@ -340,7 +343,6 @@ public:
     dSdU = u.toTightGrid(toGauge(dsdu));
 
     // parallelogram force
-
     PARALLELOGRAM(
       for (int mu = 0; mu < Nd; ++mu) {
         dsdu[mu] = Zero();
@@ -357,6 +359,7 @@ public:
       }
       dSdU += u.toTightGrid(toGauge(dsdu));
     )
+    tracePop("PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction::deriv");
   }
 
 public:

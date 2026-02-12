@@ -50,6 +50,7 @@ directory
 */
 
 #include <cassert>
+#include <Grid/perfmon/Tracing.h>
 
 #pragma once
 
@@ -619,19 +620,28 @@ public:
   }
 
 public:
-  void project(GaugeLinkField& v, const GaugeLinkField& u) { _projectU3(v, u); }
+  void project(GaugeLinkField& v, const GaugeLinkField& u) { 
+    tracePush("UnitaryProjection::project");
+    _projectU3(v, u); 
+    tracePop("UnitaryProjection::project");
+  }
 
   void project(GaugeField& V, const GaugeField& U) {
     GaugeLinkField v(U.Grid());
+
+    tracePush("UnitaryProjection::project");
     for (int mu = 0; mu < Nd; ++mu) {
       _projectU3(v, PeekIndex<LorentzIndex>(U, mu));
       PokeIndex<LorentzIndex>(V, v, mu);
     }
+    tracePop("UnitaryProjection::project");
   }
 
   void derivative(GaugeField& dVdU, const GaugeField& dZdV, const GaugeField& U) {
     GaugeLinkField dzdv(U.Grid()), dvdu(U.Grid());
     GaugeLinkField u(U.Grid());
+
+    tracePush("UnitaryProjection::derivative");
     for (int mu = 0; mu < Nd; ++mu){
       u = PeekIndex<LorentzIndex>(U, mu);
       dzdv = PeekIndex<LorentzIndex>(dZdV, mu);
@@ -647,6 +657,7 @@ public:
       } 
       PokeIndex<LorentzIndex>(dVdU, dvdu, mu);
     }
+    tracePop("UnitaryProjection::derivative");
   }
 
   void derivative(
@@ -658,6 +669,7 @@ public:
     std::string err = "explicit specification of reunitarized link only supported for Jin-Osborn derivative";
     assert(ctx.derivativeMethod == JinOsbornDerivative && err.c_str());
 
+    tracePush("UnitaryProjection::derivative");
     GaugeLinkField dvdu(U.Grid());
     for (int mu = 0; mu < Nd; ++mu){
       _derivativeU3JO(
@@ -668,6 +680,7 @@ public:
       );
       PokeIndex<LorentzIndex>(dVdU, dvdu, mu);
     }
+    tracePop("UnitaryProjection::derivative");
   }
 
 };
