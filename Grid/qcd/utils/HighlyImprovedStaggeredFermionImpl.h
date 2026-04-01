@@ -438,18 +438,18 @@ public:
     HISQLOOP0( // Eqn 5a
       x[mu] = (ctx.c0 - 6.0*ctx.lepage)*w.link(mu);
       HISQLOOP1( // Eqn 5b
-        s3 = w.staple(mu, nu);
+        s3 = w.exchange(w.staple(mu, nu), mu, nu);
         x[mu] += ctx.c1*s3; 
-        HISQLEPAGE(x[mu] += ctx.lepage*w.staple(s3, mu, nu, false)) // Eqn 6
+        HISQLEPAGE(x[mu] += ctx.lepage*w.staple(s3, mu, nu)) // Eqn 6
         HISQLOOP2( // Eqn 5c
-          s5 = w.staple(s3, mu, i);
+          s5 = w.exchange(w.staple(s3, mu, i), mu, i);
           x[mu] += ctx.c2*s5;
-          HISQLOOP3(x[mu] += ctx.c3*w.staple(s5, mu, j, false)) // Eqn 5d
+          HISQLOOP3(x[mu] += ctx.c3*w.staple(s5, mu, j)) // Eqn 5d
     ) ) )
     X = w.toTightGrid(toGauge(x));
 
     // Naik term
-    HISQNAIK(x[mu] = ctx.naik*w.CovShiftFwd(mu, w.CovShiftFwd(mu), false))
+    HISQNAIK(x[mu] = ctx.naik*w.CovShiftFwd(mu, w.exchange(w.CovShiftFwd(mu), mu)))
     if (ctx.naik != 0.0) WWW = w.toTightGrid(toGauge(x));
     tracePop("HighlyImprovedStaggeredFermionImpl::smear");
   }
@@ -584,27 +584,27 @@ public:
         cnu = ctx.c1*dxdw[mu];   // Eqn 3b
         snu = ctx.c1*w.link(nu); // Eqn 4 
         HISQLEPAGE(
-          dnu += ctx.lepage*w.staple(dxdw[nu], nu, mu, false);
-          cnu += ctx.lepage*w.staple(dxdw[mu], mu, nu, false);
-          snu += ctx.lepage*w.staple(nu, mu, false);
+          dnu += ctx.lepage*w.staple(dxdw[nu], nu, mu);
+          cnu += ctx.lepage*w.staple(dxdw[mu], mu, nu);
+          snu += ctx.lepage*w.staple(nu, mu);
         )
         HISQLOOP2(
-          di = w.staple(dxdw[nu], nu, i);
+          di = w.exchange(w.staple(dxdw[nu], nu, i), nu, i);
           ci = ctx.c2*dxdw[mu];
           si = ctx.c2*w.link(nu);
           HISQLOOP3(
-            dj = ctx.c3*w.staple(di, nu, j, false);
-            cj = ctx.c3*w.staple(dxdw[mu], mu, j, false); 
-            sj = ctx.c3*w.staple(nu, j); 
+            dj = ctx.c3*w.staple(di, nu, j);
+            cj = ctx.c3*w.staple(dxdw[mu], mu, j); 
+            sj = ctx.c3*w.exchange(w.staple(nu, j), nu, j); 
           )
           dnu += ctx.c2*di + dj;
-          cnu += w.staple(w.exchange(ci + cj), mu, i, false); 
-          snu += w.staple(w.exchange(si + sj), nu, i, false);
-          dxdu[mu] += w.stapleDerivative(sj, di, mu, nu, false); // Eqn 3a & 4
+          cnu += w.staple(w.exchange(ci + cj, mu, i), mu, i); 
+          snu += w.staple(w.exchange(si + sj, nu, i), nu, i);
+          dxdu[mu] += w.stapleDerivative(sj, di, mu, nu); // Eqn 3a & 4
         )
-        dxdu[mu] += w.stapleDerivative(w.exchange(dnu), mu, nu, false);
-        dxdu[mu] += w.staple(w.exchange(cnu), mu, nu, false);           
-        dxdu[mu] += w.stapleDerivative(w.exchange(snu), dxdw[nu], mu, nu, false);
+        dxdu[mu] += w.stapleDerivative(w.exchange(dnu, mu, nu), mu, nu);
+        dxdu[mu] += w.staple(w.exchange(cnu, mu, nu), mu, nu);           
+        dxdu[mu] += w.stapleDerivative(w.exchange(snu, mu, nu), dxdw[nu], mu, nu);
     ) )
 
     // naik ("long link"): communicating
@@ -613,9 +613,9 @@ public:
       for (int term = 0; term < 3; ++term) { 
         if (term == 0) {
           si = w.link(mu);
-          sj = w.CovShiftIdentFwd(mu, si);
-          snu = sj*w.CovShiftIdentFwd(mu, sj, false)*adj(dxdw[mu]);
-        } else snu = w.CovShiftIdentBck(mu, w.exchange(adj(sj)*snu*si), false);
+          sj = w.exchange(w.CovShiftIdentFwd(mu, si), mu);
+          snu = sj*w.CovShiftIdentFwd(mu, sj)*adj(dxdw[mu]);
+        } else snu = w.CovShiftIdentBck(mu, w.exchange(adj(sj)*snu*si, mu));
         dxdu[mu] += ctx.naik*adj(snu);
     } )
     tracePop("HighlyImprovedStaggeredFermionImpl::smearDerivative");

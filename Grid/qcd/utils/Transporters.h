@@ -291,27 +291,148 @@ public:
   { return _pcell->Extract(U); }
 
 public:
-  /** @brief directional halo exchange */
-  /*
-  inline GaugeLinkField exchange(const GaugeLinkField& u, int mu) { 
+  /** 
+   * @brief In-place directional halo refresh on the padded grid
+   * @details Refreshes halo cells in a single dimension without extracting to the 
+   * tight grid and re-padding. Gathers interior face slices, exchanges them via MPI 
+   * with neighboring ranks, and scatters the received data into the halo region.
+   * For local dimensions (single-process), copies boundary slices into halos.
+   * 
+   * Modeled after PaddedCell::Face_exchange but operates in-place.
+   */
+  template<class vobj>
+  void refresh(Lattice<vobj>& u, int dim) {
+    typedef typename vobj::vector_type vector_type;
+    typedef typename vobj::scalar_type scalar_type;
+
     Coordinate processors = _pcell->unpadded_grid->_processors;
-    GaugeLinkField tu = toTightGrid(u);
-    GridBase* tgrid = tu.Grid();
-    GridCartesian* pgrid = _pcell->grids[mu];
-    GaugeLinkField pu(pgrid);
+    GridBase* grid = u.Grid();
+    Coordinate lds = grid->_ldimensions;
+    Coordinate simd = grid->_simd_layout;
+    int ld = lds[dim];
+    int Nd = grid->Nd();
+    const int Nsimd = vobj::Nsimd();
 
-    if (processors[mu] == 1) pu = tu;
-    else _pcell->Face_exchange(tu, pu, mu, depth);
+    // no exchange needed for local dimension
+    if (processors[dim] == 1) { return; }
 
-    return pu;
+    GRID_ASSERT(depth <= (ld - 2*depth)); 
+    GRID_ASSERT(depth > 0);
+
+    // send/recv buffer size = 2 X depth X (∏_{d != dim} L_d) / Nsimd
+    int buffer_size = 1;
+    for (int d = 0; d < Nd; d++) { if (d != dim) buffer_size *= lds[d]; }
+    buffer_size = buffer_size / Nsimd;
+
+    // buffer allocation
+    static deviceVector<vobj> send_buf;
+    static deviceVector<vobj> recv_buf;
+    send_buf.resize(buffer_size * 2 * depth);
+    recv_buf.resize(buffer_size * 2 * depth);
+#ifndef ACCELERATOR_AWARE_MPI
+    static hostVector<vobj> hsend_buf;
+    static hostVector<vobj> hrecv_buf;
+    hsend_buf.resize(buffer_size * 2 * depth);
+    hrecv_buf.resize(buffer_size * 2 * depth);
+#endif
+
+    std::vector<MpiCommsRequest_t> fwd_req;
+    std::vector<MpiCommsRequest_t> bwd_req;
+
+    int bytes = buffer_size * sizeof(vobj);
+
+    // determine neighboring ranks
+    int comm_proc = 1;
+    int xmit_to_rank, recv_from_rank;
+    grid->ShiftedRanks(dim, comm_proc, xmit_to_rank, recv_from_rank);
+
+    // interior region is [depth .. ld-depth-1]
+    // gather low interior face: slices at depth .. 2*depth-1
+    // these get sent forward and scattered into the high halo of the neighbor
+    int plane = 0;
+    for (int d = 0; d < depth; d++) {
+      int tag = d * 1024 + dim * 2 + 0;
+      GatherSlice(send_buf, u, depth + d, dim, plane * buffer_size); plane++;
+#ifdef ACCELERATOR_AWARE_MPI
+      grid->SendToRecvFromBegin(fwd_req,
+        (void*)&send_buf[d * buffer_size], xmit_to_rank,
+        (void*)&recv_buf[d * buffer_size], recv_from_rank, bytes, tag);
+#else
+      acceleratorCopyFromDevice(&send_buf[d * buffer_size], 
+        &hsend_buf[d * buffer_size], bytes);
+      grid->SendToRecvFromBegin(fwd_req,
+        (void*)&hsend_buf[d * buffer_size], xmit_to_rank,
+        (void*)&hrecv_buf[d * buffer_size], recv_from_rank, bytes, tag);
+#endif
+    }
+
+    // gather high interior face: slices at ld-2*depth .. ld-depth-1
+    // these get sent backward and scattered into the low halo of the neighbor
+    for (int d = 0; d < depth; d++) {
+      int tag = d * 1024 + dim * 2 + 1;
+      GatherSlice(send_buf, u, ld - 2 * depth + d, dim, plane * buffer_size); plane++;
+#ifdef ACCELERATOR_AWARE_MPI
+      grid->SendToRecvFromBegin(bwd_req,
+        (void*)&send_buf[(d + depth) * buffer_size], recv_from_rank,
+        (void*)&recv_buf[(d + depth) * buffer_size], xmit_to_rank, bytes, tag);
+#else
+      acceleratorCopyFromDevice(&send_buf[(d + depth) * buffer_size], 
+        &hsend_buf[(d + depth) * buffer_size], bytes);
+      grid->SendToRecvFromBegin(bwd_req,
+        (void*)&hsend_buf[(d + depth) * buffer_size], recv_from_rank,
+        (void*)&hrecv_buf[(d + depth) * buffer_size], xmit_to_rank, bytes, tag);
+#endif
+    }
+
+    // complete forward comms and scatter into high halo [ld-depth .. ld-1]
+    plane = 0;
+    grid->CommsComplete(fwd_req);
+#ifndef ACCELERATOR_AWARE_MPI
+    for (int d = 0; d < depth; d++) {
+      acceleratorCopyToDevice(&hrecv_buf[d * buffer_size], 
+        &recv_buf[d * buffer_size], bytes);
+    }
+#endif
+    for (int d = 0; d < depth; d++) {
+      ScatterSlice(recv_buf, u, ld - depth + d, dim, plane * buffer_size); plane++;
+    }
+
+    // complete backward comms and scatter into low halo [0 .. depth-1]
+    grid->CommsComplete(bwd_req);
+#ifndef ACCELERATOR_AWARE_MPI
+    for (int d = 0; d < depth; d++) {
+      acceleratorCopyToDevice(&hrecv_buf[(d + depth) * buffer_size], 
+        &recv_buf[(d + depth) * buffer_size], bytes);
+    }
+#endif
+    for (int d = 0; d < depth; d++) {
+      ScatterSlice(recv_buf, u, d, dim, plane * buffer_size); plane++;
+    }
   }
-  */
+
+  /** @brief directional halo exchange -- single dimension */
+  inline GaugeLinkField exchange(GaugeLinkField u, int dim) {
+    tracePush("Transporters::exchange(dim)");
+    refresh(u, dim);
+    tracePop("Transporters::exchange(dim)");
+    return u;
+  }
+
+  /** @brief directional halo exchange -- two dimensions */
+  inline GaugeLinkField exchange(GaugeLinkField u, int dim1, int dim2) {
+    tracePush("Transporters::exchange(dim1,dim2)");
+    refresh(u, dim1);
+    refresh(u, dim2);
+    tracePop("Transporters::exchange(dim1,dim2)");
+    return u;
+  }
 
   /** @brief full halo exchange */
   inline GaugeLinkField exchange(const GaugeLinkField& u) { 
     tracePush("Transporters::exchange");
-    return toPaddedGrid(toTightGrid(u)); 
+    GaugeLinkField result = toPaddedGrid(toTightGrid(u)); 
     tracePop("Transporters::exchange");
+    return result;
   }
 
   /** @brief update followed by halo exchange */
@@ -342,123 +463,94 @@ public:
   inline const GaugeLinkField CovShiftFwd(
     int mu, 
     const GaugeLinkField& u, 
-    const GaugeLinkField& v,
-    bool correct_boundaries = true
+    const GaugeLinkField& v
   ) { 
-    if (correct_boundaries) return exchange(_transporter[mu].CovShiftFwd(u, v)); 
-    else return _transporter[mu].CovShiftFwd(u, v);
+    return _transporter[mu].CovShiftFwd(u, v);
   }
 
   inline const GaugeLinkField CovShiftFwd(
     int mu, 
-    const GaugeLinkField& v,
-    bool correct_boundaries = true
+    const GaugeLinkField& v
   ) { 
-    if (correct_boundaries) return exchange(_transporter[mu].CovShiftFwd(v)); 
-    else return _transporter[mu].CovShiftFwd(v);
+    return _transporter[mu].CovShiftFwd(v);
   }
 
   inline const GaugeLinkField CovShiftFwd(
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   ) { 
-    if (correct_boundaries) return exchange(_transporter[mu].CovShiftFwd(link(nu))); 
-    else return _transporter[mu].CovShiftFwd(link(nu));
+    return _transporter[mu].CovShiftFwd(link(nu));
   }
 
-  inline const GaugeLinkField CovShiftFwd(int mu, bool correct_boundaries = true) { 
-    if (correct_boundaries) return exchange(_transporter[mu].CovShiftFwd()); 
-    else return _transporter[mu].CovShiftFwd();
+  inline const GaugeLinkField CovShiftFwd(int mu) { 
+    return _transporter[mu].CovShiftFwd();
   }
 
   inline const GaugeLinkField CovShiftBck(
     int mu,
     const GaugeLinkField& u, 
-    const GaugeLinkField& v,
-    bool correct_boundaries = true
+    const GaugeLinkField& v
   ) { 
-    if (correct_boundaries) return exchange(_transporter[mu].CovShiftBck(u, v)); 
-    else return _transporter[mu].CovShiftBck(u, v);
+    return _transporter[mu].CovShiftBck(u, v);
   }
 
   inline const GaugeLinkField CovShiftBck(
     int mu, 
-    const GaugeLinkField& v, 
-    bool correct_boundaries = true
+    const GaugeLinkField& v
   ) { 
-    if (correct_boundaries) return exchange(_transporter[mu].CovShiftBck(v)); 
-    else return _transporter[mu].CovShiftBck(v);
+    return _transporter[mu].CovShiftBck(v);
   }
 
   inline const GaugeLinkField CovShiftBck(
     int mu, 
-    int nu, 
-    bool correct_boundaries = true
+    int nu
   ) { 
-    if (correct_boundaries) return exchange(_transporter[mu].CovShiftBck(link(nu))); 
-    else return _transporter[mu].CovShiftBck(link(nu));
+    return _transporter[mu].CovShiftBck(link(nu));
   }
 
-  inline const GaugeLinkField CovShiftBck(int mu, bool correct_boundaries = true) { 
-    if (correct_boundaries) return exchange(_transporter[mu].CovShiftBck()); 
-    else return _transporter[mu].CovShiftBck();
+  inline const GaugeLinkField CovShiftBck(int mu) { 
+    return _transporter[mu].CovShiftBck();
   }
 
 public:
   inline const GaugeLinkField CovShiftIdentFwd(
     int mu, 
-    const GaugeLinkField& v,
-    bool correct_boundaries = true
+    const GaugeLinkField& v
   ) { 
-    if (correct_boundaries) return exchange(_transporter[mu].CovShiftIdentFwd(v)); 
-    else return _transporter[mu].CovShiftIdentFwd(v);
+    return _transporter[mu].CovShiftIdentFwd(v);
   }
 
   inline const GaugeLinkField CovShiftIdentBck(
     int mu, 
-    const GaugeLinkField& v,
-    bool correct_boundaries = true
+    const GaugeLinkField& v
   ) { 
-    if (correct_boundaries) return exchange(_transporter[mu].CovShiftIdentBck(v)); 
-    else return _transporter[mu].CovShiftIdentBck(v);
+    return _transporter[mu].CovShiftIdentBck(v);
   }
 
   inline const GaugeLinkField CovShiftIdentFwd(
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   ) { 
-    if (correct_boundaries) 
-      return exchange(_transporter[mu].CovShiftIdentFwd(link(nu))); 
-    else return _transporter[mu].CovShiftIdentFwd(link(nu));
+    return _transporter[mu].CovShiftIdentFwd(link(nu));
   }
 
   inline const GaugeLinkField CovShiftIdentBck(
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   ) { 
-    if (correct_boundaries) 
-      return exchange(_transporter[mu].CovShiftIdentBck(link(nu))); 
-    else return _transporter[mu].CovShiftIdentBck(link(nu));
+    return _transporter[mu].CovShiftIdentBck(link(nu));
   }
 
 public:
   inline const GaugeLinkField reverse(
     const GaugeLinkField& u, 
-    int mu,
-    bool correct_boundaries = true
+    int mu
   ) {
-    if (correct_boundaries) 
-      return exchange(CovShiftIdentBck(mu, adj(u))); 
-    else return CovShiftIdentBck(mu, adj(u));
+    return CovShiftIdentBck(mu, adj(u));
   }
 
-  inline const GaugeLinkField reverse(int mu, bool correct_boundaries = true) {
-    if (correct_boundaries) 
-      return exchange(CovShiftIdentBck(mu, adj(link(mu)))); 
-    else return CovShiftIdentBck(mu, adj(link(mu)));
+  inline const GaugeLinkField reverse(int mu) {
+    return CovShiftIdentBck(mu, adj(link(mu)));
   }
 
 public:
@@ -478,8 +570,7 @@ public:
     const GaugeLinkField& lv,
     const GaugeLinkField& rv,
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField staple(
@@ -487,26 +578,23 @@ public:
     const GaugeLinkField& lv,
     const GaugeLinkField& rv,
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField staple(
     const GaugeLinkField& u, 
     const GaugeLinkField& v,
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField staple(
     const GaugeLinkField& v, 
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
-  inline const GaugeLinkField staple(int mu, int nu, bool correct_boundaries = true);
+  inline const GaugeLinkField staple(int mu, int nu);
 
 public:
   inline const GaugeLinkField _upperStaple(
@@ -523,29 +611,25 @@ public:
     const GaugeLinkField& lv,
     const GaugeLinkField& rv,
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );  
 
   inline const GaugeLinkField upperStaple(
     const GaugeLinkField& lv, 
     const GaugeLinkField& rv,
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField upperStaple(
     const GaugeLinkField& u, 
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField upperStaple(
     int mu, 
-    int nu, 
-    bool correct_boundaries = true
+    int nu
   );
 
 public:
@@ -563,29 +647,25 @@ public:
     const GaugeLinkField& lv,
     const GaugeLinkField& rv,
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField lowerStaple(
     const GaugeLinkField& lv, 
     const GaugeLinkField& rv,
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField lowerStaple(
     const GaugeLinkField& u, 
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField lowerStaple(
     int mu, 
-    int nu, 
-    bool correct_boundaries = true
+    int nu
   );
 
 public:
@@ -594,29 +674,25 @@ public:
     const GaugeLinkField& tv,
     const GaugeLinkField& u,
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField rightStaple(
     const GaugeLinkField& bv, 
     const GaugeLinkField& tv,
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField rightStaple(
     const GaugeLinkField& u, 
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField rightStaple(
     int mu, 
-    int nu, 
-    bool correct_boundaries = true
+    int nu
   );
 
 public:
@@ -625,29 +701,25 @@ public:
     const GaugeLinkField& tv,
     const GaugeLinkField& u, 
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField leftStaple(
     const GaugeLinkField& bv, 
     const GaugeLinkField& tv,
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField leftStaple(
     const GaugeLinkField& u, 
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField leftStaple(
     int mu, 
-    int nu, 
-    bool correct_boundaries = true
+    int nu
   );
 
 public:
@@ -665,23 +737,20 @@ public:
     const GaugeLinkField& u,
     const GaugeLinkField& c,
     int mu,
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField stapleDerivative(
     const GaugeLinkField& v,
     const GaugeLinkField& c,
     int mu,
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 
   inline const GaugeLinkField stapleDerivative(
     const GaugeLinkField& c, 
     int mu, 
-    int nu,
-    bool correct_boundaries = true
+    int nu
   );
 };
 
@@ -865,11 +934,9 @@ IMPL(Transporters)::staple(
   const GaugeLinkField& lv, // left nu link
   const GaugeLinkField& rv, // right nu link
   int mu, 
-  int nu,
-  bool correct_boundaries
+  int nu
 ) {
-  if (correct_boundaries) return exchange(_staple(tu, bu, lv, rv, mu, nu)); 
-  else return _staple(tu, bu, lv, rv, mu, nu); 
+  return _staple(tu, bu, lv, rv, mu, nu); 
 }
 
 IMPL(Transporters)::staple(
@@ -877,38 +944,30 @@ IMPL(Transporters)::staple(
   const GaugeLinkField& lv, // left nu link
   const GaugeLinkField& rv, // right nu link
   int mu, 
-  int nu,
-  bool correct_boundaries
+  int nu
 ) {
-  if (correct_boundaries) return exchange(_staple(u, u, lv, rv, mu, nu)); 
-  else return _staple(u, u, lv, rv, mu, nu); 
+  return _staple(u, u, lv, rv, mu, nu); 
 }
 
 IMPL(Transporters)::staple(
   const GaugeLinkField& u, // mu link
   const GaugeLinkField& v, // nu link
   int mu, 
-  int nu,
-  bool correct_boundaries
+  int nu
 ) { 
-  if (correct_boundaries) return exchange(_staple(u, u, v, v, mu, nu)); 
-  else return _staple(u, u, v, v, mu, nu); 
+  return _staple(u, u, v, v, mu, nu); 
 }
 
 IMPL(Transporters)::staple(
   const GaugeLinkField& u, 
   int mu, 
-  int nu, 
-  bool correct_boundaries
+  int nu
 ) { 
-  if (correct_boundaries) return exchange(_staple(u, u, link(nu), link(nu), mu, nu)); 
-  else return _staple(u, u, link(nu), link(nu), mu, nu); 
+  return _staple(u, u, link(nu), link(nu), mu, nu); 
 }
 
-IMPL(Transporters)::staple(int mu, int nu, bool correct_boundaries) { 
-  if (correct_boundaries) 
-  return exchange(_staple(link(mu), link(mu), link(nu), link(nu), mu, nu)); 
-  else return _staple(link(mu), link(mu), link(nu), link(nu), mu, nu); 
+IMPL(Transporters)::staple(int mu, int nu) { 
+  return _staple(link(mu), link(mu), link(nu), link(nu), mu, nu); 
 }
 
 // -- upper staple --//
@@ -963,39 +1022,30 @@ IMPL(Transporters)::upperStaple(
   const GaugeLinkField& lv, // left nu link
   const GaugeLinkField& rv, // right nu link
   int mu, 
-  int nu,
-  bool correct_boundaries
+  int nu
 ) {
-  if (correct_boundaries) return exchange(_upperStaple(u, lv, rv, mu, nu)); 
-  else return _upperStaple(u, lv, rv, mu, nu); 
+  return _upperStaple(u, lv, rv, mu, nu); 
 }
 
 IMPL(Transporters)::upperStaple(
   const GaugeLinkField& lv, // mu link
   const GaugeLinkField& rv, // nu link
   int mu, 
-  int nu,
-  bool correct_boundaries
+  int nu
 ) { 
-  if (correct_boundaries) return exchange(_upperStaple(link(mu), lv, rv, mu, nu)); 
-  else return _upperStaple(link(mu), lv, rv, mu, nu); 
+  return _upperStaple(link(mu), lv, rv, mu, nu); 
 }
 
 IMPL(Transporters)::upperStaple(
   const GaugeLinkField& u, 
   int mu, 
-  int nu, 
-  bool correct_boundaries
+  int nu
 ) { 
-  if (correct_boundaries) 
-    return exchange(_upperStaple(u, link(nu), link(nu), mu, nu)); 
-  else return _upperStaple(u, link(nu), link(nu), mu, nu); 
+  return _upperStaple(u, link(nu), link(nu), mu, nu); 
 }
 
-IMPL(Transporters)::upperStaple(int mu, int nu, bool correct_boundaries) { 
-  if (correct_boundaries) 
-    return exchange(_upperStaple(link(mu), link(nu), link(nu), mu, nu)); 
-  else return _upperStaple(link(mu), link(nu), link(nu), mu, nu); 
+IMPL(Transporters)::upperStaple(int mu, int nu) { 
+  return _upperStaple(link(mu), link(nu), link(nu), mu, nu); 
 }
 
 // -- lower staple --//
@@ -1050,39 +1100,30 @@ IMPL(Transporters)::lowerStaple(
   const GaugeLinkField& lv, // left nu link
   const GaugeLinkField& rv, // right nu link
   int mu, 
-  int nu,
-  bool correct_boundaries
+  int nu
 ) {
-  if (correct_boundaries) return exchange(_lowerStaple(u, lv, rv, mu, nu)); 
-  else return _lowerStaple(u, lv, rv, mu, nu); 
+  return _lowerStaple(u, lv, rv, mu, nu); 
 }
 
 IMPL(Transporters)::lowerStaple(
   const GaugeLinkField& lv, // left nu link
   const GaugeLinkField& rv, // right nu link
   int mu, 
-  int nu,
-  bool correct_boundaries
+  int nu
 ) { 
-  if (correct_boundaries) return exchange(_lowerStaple(link(mu), lv, rv, mu, nu)); 
-  else return _lowerStaple(link(mu), lv, rv, mu, nu); 
+  return _lowerStaple(link(mu), lv, rv, mu, nu); 
 }
 
 IMPL(Transporters)::lowerStaple(
   const GaugeLinkField& u, 
   int mu, 
-  int nu, 
-  bool correct_boundaries
+  int nu
 ) { 
-  if (correct_boundaries) 
-    return exchange(_lowerStaple(u, link(nu), link(nu), mu, nu)); 
-  else return _lowerStaple(u, link(nu), link(nu), mu, nu); 
+  return _lowerStaple(u, link(nu), link(nu), mu, nu); 
 }
 
-IMPL(Transporters)::lowerStaple(int mu, int nu, bool correct_boundaries) { 
-  if (correct_boundaries) 
-    return exchange(_lowerStaple(link(mu), link(nu), link(nu), mu, nu)); 
-  else return _lowerStaple(link(mu), link(nu), link(nu), mu, nu); 
+IMPL(Transporters)::lowerStaple(int mu, int nu) { 
+  return _lowerStaple(link(mu), link(nu), link(nu), mu, nu); 
 }
 
 //-- right staple --//
@@ -1100,39 +1141,30 @@ IMPL(Transporters)::rightStaple(
   const GaugeLinkField& tv, // top mu link
   const GaugeLinkField& u, // nu link
   int mu, 
-  int nu,
-  bool correct_boundaries
+  int nu
 ) { 
-  if (correct_boundaries) return exchange(_upperStaple(u, bv, tv, nu, mu)); 
-  else return _upperStaple(u, bv, tv, nu, mu); 
+  return _upperStaple(u, bv, tv, nu, mu); 
 }
 
 IMPL(Transporters)::rightStaple(
   const GaugeLinkField& bv, // bottom mu link
   const GaugeLinkField& tv, // top mu link
   int mu, 
-  int nu,
-  bool correct_boundaries
+  int nu
 ) { 
-  if (correct_boundaries) return exchange(_upperStaple(link(nu), bv, tv, nu, mu)); 
-  else return _upperStaple(link(nu), bv, tv, nu, mu); 
+  return _upperStaple(link(nu), bv, tv, nu, mu); 
 }
 
 IMPL(Transporters)::rightStaple(
   const GaugeLinkField& u, 
   int mu, 
-  int nu, 
-  bool correct_boundaries
+  int nu
 ) { 
-  if (correct_boundaries) 
-    return exchange(_upperStaple(u, link(mu), link(mu), nu, mu)); 
-  else return _upperStaple(u, link(mu), link(mu), nu, mu); 
+  return _upperStaple(u, link(mu), link(mu), nu, mu); 
 }
 
-IMPL(Transporters)::rightStaple(int mu, int nu, bool correct_boundaries) { 
-  if (correct_boundaries) 
-    return exchange(_upperStaple(link(nu), link(mu), link(mu), nu, mu)); 
-  else return _upperStaple(link(nu), link(mu), link(mu), nu, mu); 
+IMPL(Transporters)::rightStaple(int mu, int nu) { 
+  return _upperStaple(link(nu), link(mu), link(mu), nu, mu); 
 }
 
 //-- left staple --//
@@ -1150,39 +1182,30 @@ IMPL(Transporters)::leftStaple(
   const GaugeLinkField& tv, // top mu link
   const GaugeLinkField& u, // nu link
   int mu, 
-  int nu,
-  bool correct_boundaries
+  int nu
 ) { 
-  if (correct_boundaries) return exchange(_lowerStaple(u, bv, tv, nu, mu)); 
-  else return _lowerStaple(u, bv, tv, nu, mu); 
+  return _lowerStaple(u, bv, tv, nu, mu); 
 }
 
 IMPL(Transporters)::leftStaple(
   const GaugeLinkField& bv, // bottom mu link
   const GaugeLinkField& tv, // top mu link
   int mu, 
-  int nu,
-  bool correct_boundaries
+  int nu
 ) { 
-  if (correct_boundaries) return exchange(_lowerStaple(link(nu), bv, tv, nu, mu)); 
-  else return _lowerStaple(link(nu), bv, tv, nu, mu); 
+  return _lowerStaple(link(nu), bv, tv, nu, mu); 
 }
 
 IMPL(Transporters)::leftStaple(
   const GaugeLinkField& u, 
   int mu, 
-  int nu, 
-  bool correct_boundaries
+  int nu
 ) { 
-  if (correct_boundaries) 
-    return exchange(_lowerStaple(u, link(mu), link(mu), nu, mu)); 
-  else return _lowerStaple(u, link(mu), link(mu), nu, mu); 
+  return _lowerStaple(u, link(mu), link(mu), nu, mu); 
 }
 
-IMPL(Transporters)::leftStaple(int mu, int nu, bool correct_boundaries) { 
-  if (correct_boundaries) 
-    return exchange(_lowerStaple(link(nu), link(mu), link(mu), nu, mu)); 
-  else return _lowerStaple(link(nu), link(mu), link(mu), nu, mu); 
+IMPL(Transporters)::leftStaple(int mu, int nu) { 
+  return _lowerStaple(link(nu), link(mu), link(mu), nu, mu); 
 }
 
 //-- symmetric staple derivative --//
@@ -1268,11 +1291,9 @@ IMPL(Transporters)::stapleDerivative(
   const GaugeLinkField& v, // nu link
   const GaugeLinkField& c, // chain
   int mu,
-  int nu,
-  bool correct_boundaries
+  int nu
 ) { 
-  if (correct_boundaries) return exchange(_stapleDerivative(u, v, c, mu, nu));
-  else return _stapleDerivative(u, v, c, mu, nu); 
+  return _stapleDerivative(u, v, c, mu, nu); 
 }
 
 /** @brief symmetric staple derivative w/o passing of middle link */
@@ -1280,17 +1301,15 @@ IMPL(Transporters)::stapleDerivative(
   const GaugeLinkField& v,
   const GaugeLinkField& c,
   int mu,
-  int nu,
-  bool correct_boundaries
-) { return stapleDerivative(link(mu), v, c, mu, nu, correct_boundaries); }
+  int nu
+) { return stapleDerivative(link(mu), v, c, mu, nu); }
 
 /** @brief symmetric staple derivative w/o explicit middle/side links */
 IMPL(Transporters)::stapleDerivative(
   const GaugeLinkField& c, 
   int mu, 
-  int nu,
-  bool correct_boundaries
-) { return stapleDerivative(link(mu), link(nu), c, mu, nu, correct_boundaries); }
+  int nu
+) { return stapleDerivative(link(mu), link(nu), c, mu, nu); }
 
 // undefine macros to prevent conflicts
 #undef ACCELERATOR_SCOPE
