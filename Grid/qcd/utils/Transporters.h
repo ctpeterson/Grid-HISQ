@@ -464,94 +464,69 @@ public:
     int mu, 
     const GaugeLinkField& u, 
     const GaugeLinkField& v
-  ) { 
-    return _transporter[mu].CovShiftFwd(u, v);
-  }
+  ) { return _transporter[mu].CovShiftFwd(u, v); }
 
   inline const GaugeLinkField CovShiftFwd(
     int mu, 
     const GaugeLinkField& v
-  ) { 
-    return _transporter[mu].CovShiftFwd(v);
-  }
+  ) { return _transporter[mu].CovShiftFwd(v); }
 
   inline const GaugeLinkField CovShiftFwd(
     int mu, 
     int nu
-  ) { 
-    return _transporter[mu].CovShiftFwd(link(nu));
-  }
+  ) { return _transporter[mu].CovShiftFwd(link(nu)); }
 
-  inline const GaugeLinkField CovShiftFwd(int mu) { 
-    return _transporter[mu].CovShiftFwd();
-  }
+  inline const GaugeLinkField CovShiftFwd(int mu) 
+  { return _transporter[mu].CovShiftFwd(); }
 
   inline const GaugeLinkField CovShiftBck(
     int mu,
     const GaugeLinkField& u, 
     const GaugeLinkField& v
-  ) { 
-    return _transporter[mu].CovShiftBck(u, v);
-  }
+  ) { return _transporter[mu].CovShiftBck(u, v); }
 
   inline const GaugeLinkField CovShiftBck(
     int mu, 
     const GaugeLinkField& v
-  ) { 
-    return _transporter[mu].CovShiftBck(v);
-  }
+  ) { return _transporter[mu].CovShiftBck(v); }
 
   inline const GaugeLinkField CovShiftBck(
     int mu, 
     int nu
-  ) { 
-    return _transporter[mu].CovShiftBck(link(nu));
-  }
+  ) { return _transporter[mu].CovShiftBck(link(nu)); }
 
-  inline const GaugeLinkField CovShiftBck(int mu) { 
-    return _transporter[mu].CovShiftBck();
-  }
+  inline const GaugeLinkField CovShiftBck(int mu) 
+  { return _transporter[mu].CovShiftBck(); }
 
 public:
   inline const GaugeLinkField CovShiftIdentFwd(
     int mu, 
     const GaugeLinkField& v
-  ) { 
-    return _transporter[mu].CovShiftIdentFwd(v);
-  }
+  ) { return _transporter[mu].CovShiftIdentFwd(v); }
 
   inline const GaugeLinkField CovShiftIdentBck(
     int mu, 
     const GaugeLinkField& v
-  ) { 
-    return _transporter[mu].CovShiftIdentBck(v);
-  }
+  ) { return _transporter[mu].CovShiftIdentBck(v); }
 
   inline const GaugeLinkField CovShiftIdentFwd(
     int mu, 
     int nu
-  ) { 
-    return _transporter[mu].CovShiftIdentFwd(link(nu));
-  }
+  ) { return _transporter[mu].CovShiftIdentFwd(link(nu)); }
 
   inline const GaugeLinkField CovShiftIdentBck(
     int mu, 
     int nu
-  ) { 
-    return _transporter[mu].CovShiftIdentBck(link(nu));
-  }
+  ) { return _transporter[mu].CovShiftIdentBck(link(nu)); }
 
 public:
   inline const GaugeLinkField reverse(
     const GaugeLinkField& u, 
     int mu
-  ) {
-    return CovShiftIdentBck(mu, adj(u));
-  }
+  ) { return CovShiftIdentBck(mu, adj(u)); }
 
-  inline const GaugeLinkField reverse(int mu) {
-    return CovShiftIdentBck(mu, adj(link(mu)));
-  }
+  inline const GaugeLinkField reverse(int mu) 
+  { return CovShiftIdentBck(mu, adj(link(mu))); }
 
 public:
   inline const GaugeLinkField _staple(
@@ -935,9 +910,7 @@ IMPL(Transporters)::staple(
   const GaugeLinkField& rv, // right nu link
   int mu, 
   int nu
-) {
-  return _staple(tu, bu, lv, rv, mu, nu); 
-}
+) { return _staple(tu, bu, lv, rv, mu, nu); }
 
 IMPL(Transporters)::staple(
   const GaugeLinkField& u, // mu link
@@ -945,30 +918,23 @@ IMPL(Transporters)::staple(
   const GaugeLinkField& rv, // right nu link
   int mu, 
   int nu
-) {
-  return _staple(u, u, lv, rv, mu, nu); 
-}
+) { return _staple(u, u, lv, rv, mu, nu); }
 
 IMPL(Transporters)::staple(
   const GaugeLinkField& u, // mu link
   const GaugeLinkField& v, // nu link
   int mu, 
   int nu
-) { 
-  return _staple(u, u, v, v, mu, nu); 
-}
+) { return _staple(u, u, v, v, mu, nu); }
 
 IMPL(Transporters)::staple(
   const GaugeLinkField& u, 
   int mu, 
   int nu
-) { 
-  return _staple(u, u, link(nu), link(nu), mu, nu); 
-}
+) { return _staple(u, u, link(nu), link(nu), mu, nu); }
 
-IMPL(Transporters)::staple(int mu, int nu) { 
-  return _staple(link(mu), link(mu), link(nu), link(nu), mu, nu); 
-}
+IMPL(Transporters)::staple(int mu, int nu) 
+{ return _staple(link(mu), link(mu), link(nu), link(nu), mu, nu); }
 
 // -- upper staple --//
 
@@ -1023,30 +989,23 @@ IMPL(Transporters)::upperStaple(
   const GaugeLinkField& rv, // right nu link
   int mu, 
   int nu
-) {
-  return _upperStaple(u, lv, rv, mu, nu); 
-}
+) { return _upperStaple(u, lv, rv, mu, nu); }
 
 IMPL(Transporters)::upperStaple(
   const GaugeLinkField& lv, // mu link
   const GaugeLinkField& rv, // nu link
   int mu, 
   int nu
-) { 
-  return _upperStaple(link(mu), lv, rv, mu, nu); 
-}
+) { return _upperStaple(link(mu), lv, rv, mu, nu); }
 
 IMPL(Transporters)::upperStaple(
   const GaugeLinkField& u, 
   int mu, 
   int nu
-) { 
-  return _upperStaple(u, link(nu), link(nu), mu, nu); 
-}
+) { return _upperStaple(u, link(nu), link(nu), mu, nu); }
 
-IMPL(Transporters)::upperStaple(int mu, int nu) { 
-  return _upperStaple(link(mu), link(nu), link(nu), mu, nu); 
-}
+IMPL(Transporters)::upperStaple(int mu, int nu) 
+{ return _upperStaple(link(mu), link(nu), link(nu), mu, nu); }
 
 // -- lower staple --//
 
@@ -1101,30 +1060,23 @@ IMPL(Transporters)::lowerStaple(
   const GaugeLinkField& rv, // right nu link
   int mu, 
   int nu
-) {
-  return _lowerStaple(u, lv, rv, mu, nu); 
-}
+) { return _lowerStaple(u, lv, rv, mu, nu); }
 
 IMPL(Transporters)::lowerStaple(
   const GaugeLinkField& lv, // left nu link
   const GaugeLinkField& rv, // right nu link
   int mu, 
   int nu
-) { 
-  return _lowerStaple(link(mu), lv, rv, mu, nu); 
-}
+) { return _lowerStaple(link(mu), lv, rv, mu, nu); }
 
 IMPL(Transporters)::lowerStaple(
   const GaugeLinkField& u, 
   int mu, 
   int nu
-) { 
-  return _lowerStaple(u, link(nu), link(nu), mu, nu); 
-}
+) { return _lowerStaple(u, link(nu), link(nu), mu, nu); }
 
-IMPL(Transporters)::lowerStaple(int mu, int nu) { 
-  return _lowerStaple(link(mu), link(nu), link(nu), mu, nu); 
-}
+IMPL(Transporters)::lowerStaple(int mu, int nu) 
+{ return _lowerStaple(link(mu), link(nu), link(nu), mu, nu); }
 
 //-- right staple --//
 
@@ -1142,30 +1094,23 @@ IMPL(Transporters)::rightStaple(
   const GaugeLinkField& u, // nu link
   int mu, 
   int nu
-) { 
-  return _upperStaple(u, bv, tv, nu, mu); 
-}
+) { return _upperStaple(u, bv, tv, nu, mu); }
 
 IMPL(Transporters)::rightStaple(
   const GaugeLinkField& bv, // bottom mu link
   const GaugeLinkField& tv, // top mu link
   int mu, 
   int nu
-) { 
-  return _upperStaple(link(nu), bv, tv, nu, mu); 
-}
+) { return _upperStaple(link(nu), bv, tv, nu, mu); }
 
 IMPL(Transporters)::rightStaple(
   const GaugeLinkField& u, 
   int mu, 
   int nu
-) { 
-  return _upperStaple(u, link(mu), link(mu), nu, mu); 
-}
+) { return _upperStaple(u, link(mu), link(mu), nu, mu); }
 
-IMPL(Transporters)::rightStaple(int mu, int nu) { 
-  return _upperStaple(link(nu), link(mu), link(mu), nu, mu); 
-}
+IMPL(Transporters)::rightStaple(int mu, int nu) 
+{ return _upperStaple(link(nu), link(mu), link(mu), nu, mu); }
 
 //-- left staple --//
 
@@ -1183,30 +1128,23 @@ IMPL(Transporters)::leftStaple(
   const GaugeLinkField& u, // nu link
   int mu, 
   int nu
-) { 
-  return _lowerStaple(u, bv, tv, nu, mu); 
-}
+) { return _lowerStaple(u, bv, tv, nu, mu); }
 
 IMPL(Transporters)::leftStaple(
   const GaugeLinkField& bv, // bottom mu link
   const GaugeLinkField& tv, // top mu link
   int mu, 
   int nu
-) { 
-  return _lowerStaple(link(nu), bv, tv, nu, mu); 
-}
+) { return _lowerStaple(link(nu), bv, tv, nu, mu); }
 
 IMPL(Transporters)::leftStaple(
   const GaugeLinkField& u, 
   int mu, 
   int nu
-) { 
-  return _lowerStaple(u, link(mu), link(mu), nu, mu); 
-}
+) { return _lowerStaple(u, link(mu), link(mu), nu, mu); }
 
-IMPL(Transporters)::leftStaple(int mu, int nu) { 
-  return _lowerStaple(link(nu), link(mu), link(mu), nu, mu); 
-}
+IMPL(Transporters)::leftStaple(int mu, int nu) 
+{ return _lowerStaple(link(nu), link(mu), link(mu), nu, mu); }
 
 //-- symmetric staple derivative --//
 
@@ -1292,9 +1230,7 @@ IMPL(Transporters)::stapleDerivative(
   const GaugeLinkField& c, // chain
   int mu,
   int nu
-) { 
-  return _stapleDerivative(u, v, c, mu, nu); 
-}
+) { return _stapleDerivative(u, v, c, mu, nu); }
 
 /** @brief symmetric staple derivative w/o passing of middle link */
 IMPL(Transporters)::stapleDerivative(
