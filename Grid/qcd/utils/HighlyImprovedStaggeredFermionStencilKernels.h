@@ -71,16 +71,26 @@ inline void hisqAppendShift(std::vector<Coordinate>& shifts, int dir, Args... ar
   shifts.push_back(shift);
 }
 
-// Stencil index for 3-link stencil (5 entries per mu-nu pair)
-accelerator_inline int hisqStencilIndex3(int mu, int nu) { return 5*(nu + Nd*mu); }
+// Compact stencil index for 3-link stencil (5 entries × 12 valid mu≠nu pairs = 60 shifts)
+accelerator_inline int hisqStencilIndex3(int mu, int nu) {
+  int nu_rank = nu - (nu > mu ? 1 : 0);
+  return 5*(nu_rank + 3*mu);
+}
 
-// Stencil index for 5-link stencil (17 entries per mu-nu-rho triplet)
-accelerator_inline int hisqStencilIndex5(int mu, int nu, int rho) 
-{ return 17*(rho + Nd*nu + Nd*Nd*mu); }
+// Compact stencil index for 5-link stencil (17 entries × 24 valid distinct triples = 408 shifts)
+accelerator_inline int hisqStencilIndex5(int mu, int nu, int rho) {
+  int nu_rank = nu - (nu > mu ? 1 : 0);
+  int rho_rank = rho - (rho > mu ? 1 : 0) - (rho > nu ? 1 : 0);
+  return 17*(rho_rank + 2*nu_rank + 6*mu);
+}
 
-// Stencil index for 7-link stencil (46 entries per mu-nu-rho-sig quad)
-accelerator_inline int hisqStencilIndex7(int mu, int nu, int rho, int sig) 
-{ return 46*(sig + Nd*rho + Nd*Nd*nu + Nd*Nd*Nd*mu); }
+// Compact stencil index for 7-link stencil (46 entries × 24 valid distinct quads = 1104 shifts)
+// For Nd=4, sig is determined by (mu,nu,rho) so it does not affect the index.
+accelerator_inline int hisqStencilIndex7(int mu, int nu, int rho, int sig) {
+  int nu_rank = nu - (nu > mu ? 1 : 0);
+  int rho_rank = rho - (rho > mu ? 1 : 0) - (rho > nu ? 1 : 0);
+  return 46*(rho_rank + 2*nu_rank + 6*mu);
+}
 
 // Read a link from a stencil-accessed view
 template<class LinkView> accelerator_inline
@@ -97,9 +107,10 @@ inline std::vector<Coordinate> createHISQStencil(int kind) {
     std::vector<Coordinate> shifts;
 
     if (kind == 3) {
-        // 5 entries per (mu, nu) pair: mu, nu, 0, mu-nu, -nu
+        // 5 entries per valid (mu, nu) pair with mu≠nu
         for (int mu = 0; mu < Nd; mu++)
         for (int nu = 0; nu < Nd; nu++) {
+            if (nu == mu) continue;
             hisqAppendShift(shifts, mu);
             hisqAppendShift(shifts, nu);
             hisqAppendShift(shifts, shiftSignal::NO_SHIFT);
@@ -107,10 +118,12 @@ inline std::vector<Coordinate> createHISQStencil(int kind) {
             hisqAppendShift(shifts, Back(nu));
         }
     } else if (kind == 5) {
-        // 17 entries per (mu, nu, rho) triplet
+        // 17 entries per valid (mu, nu, rho) triplet with all distinct
         for (int mu = 0; mu < Nd; mu++)
-        for (int nu = 0; nu < Nd; nu++)
+        for (int nu = 0; nu < Nd; nu++) {
+        if (nu == mu) continue;
         for (int rho = 0; rho < Nd; rho++) {
+            if (rho == mu || rho == nu) continue;
             hisqAppendShift(shifts, nu, Back(rho));           // 0
             hisqAppendShift(shifts, nu);                      // 1
             hisqAppendShift(shifts, Back(rho));               // 2
@@ -128,13 +141,16 @@ inline std::vector<Coordinate> createHISQStencil(int kind) {
             hisqAppendShift(shifts, mu, Back(nu));            // 14
             hisqAppendShift(shifts, mu, Back(nu), rho);       // 15
             hisqAppendShift(shifts, nu, rho);                 // 16
-        }
+        } }
     } else if (kind == 7) {
-        // 46 entries per (mu, nu, rho, sig) quad
+        // 46 entries per valid (mu, nu, rho, sig) quad with all distinct
+        // For Nd=4, sig is determined by (mu, nu, rho)
         for (int mu = 0; mu < Nd; mu++)
-        for (int nu = 0; nu < Nd; nu++)
-        for (int rho = 0; rho < Nd; rho++)
-        for (int sig = 0; sig < Nd; sig++) {
+        for (int nu = 0; nu < Nd; nu++) {
+        if (nu == mu) continue;
+        for (int rho = 0; rho < Nd; rho++) {
+            if (rho == mu || rho == nu) continue;
+            int sig = 6 - mu - nu - rho;
             hisqAppendShift(shifts, shiftSignal::NO_SHIFT);              // 0
             hisqAppendShift(shifts, mu);                                 // 1
             hisqAppendShift(shifts, mu, nu);                             // 2
@@ -181,7 +197,7 @@ inline std::vector<Coordinate> createHISQStencil(int kind) {
             hisqAppendShift(shifts, Back(rho));                          // 43
             hisqAppendShift(shifts, Back(rho), sig);                     // 44
             hisqAppendShift(shifts, Back(rho), Back(sig));               // 45
-        }
+        } }
     }
     return shifts;
 }
@@ -426,7 +442,7 @@ void hisqFiveLinkDeriv(
 
         res = Zero();
 
-        if constexpr(term==0) {
+        if (term==0) {
         res += (link(U_v, x_p_mu, rho)
                *link(U_v, x_p_mu_p_rho, nu)
                *adj(link(U_v, x_p_mu_p_nu, rho))
@@ -471,7 +487,7 @@ void hisqFiveLinkDeriv(
                *link(XY_v, x_m_nu_p_rho, mu)
                )*link(U_v, x_m_nu_p_rho, nu)*adj(link(U_v, x, rho));
         }
-        if constexpr(term==1) {
+        if (term==1) {
           res += (link(U_v, x_p_mu, nu)
                   *adj(link(XY_v, x_p_mu_p_nu, rho))
                   *adj(link(U_v, x_p_mu_p_rho, nu))
@@ -594,7 +610,7 @@ void hisqSevenLinkDeriv(
           auto x_m_rho_p_sig            = gStencil7_v.GetEntry(s+44, site);
           auto x_m_rho_m_sig            = gStencil7_v.GetEntry(s+45, site);
 
-          if constexpr(term==0) {
+          if (term==0) {
             res = adj(link(XY_v, x_p_mu, nu))*adj(link(U_v, x_p_nu, mu))
                   *(link(U_v, x_p_nu, rho)
                   *(link(U_v, x_p_nu_p_rho, sig)
@@ -613,7 +629,7 @@ void hisqSevenLinkDeriv(
                   *link(U_v, x_m_rho_m_sig, sig)
                   )*link(U_v, x_m_rho, rho));
           }
-          if constexpr(term==1) {
+          if (term==1) {
             res = link(XY_v, x_p_mu_m_nu, nu)*adj(link(U_v, x_m_nu, mu))
                   *(link(U_v, x_m_nu, rho)
                   *(link(U_v, x_m_nu_p_rho, sig)
@@ -632,7 +648,7 @@ void hisqSevenLinkDeriv(
                   *link(U_v, x_m_rho_m_sig, sig)
                   )*link(U_v, x_m_rho, rho));
           }
-          if constexpr(term==2) {
+          if (term==2) {
             U1 = adj(link(U_v, x_p_nu, mu));
             res = (link(U_v, x_p_mu, sig)
                   *adj(link(XY_v, x_p_mu_p_sig, nu))
@@ -649,7 +665,7 @@ void hisqSevenLinkDeriv(
                   *link(U_v, x_p_mu_p_nu_m_sig, sig)
                   )*U1*adj(link(U_v, x_p_nu_m_rho, rho))*adj(link(U_v, x_m_rho, nu))*link(U_v, x_m_rho, rho);
           }
-          if constexpr(term==3) {
+          if (term==3) {
             U1 = adj(link(U_v, x_m_nu, mu));
             res = (link(U_v, x_p_mu, sig)
                   *link(XY_v, x_p_mu_m_nu_p_sig, nu)
@@ -666,7 +682,7 @@ void hisqSevenLinkDeriv(
                   *link(U_v, x_p_mu_m_nu_m_sig, sig)
                   )*U1*adj(link(U_v, x_m_nu_m_rho, rho))*link(U_v, x_m_nu_m_rho, nu)*link(U_v, x_m_rho, rho);
           }
-          if constexpr(term==4) {
+          if (term==4) {
             res = (link(U_v, x_p_mu, rho)
                   *(link(U_v, x_p_mu_p_rho, sig)
                   *adj(link(XY_v, x_p_mu_p_rho_p_sig, nu))
@@ -685,7 +701,7 @@ void hisqSevenLinkDeriv(
                   )*link(U_v, x_p_mu_p_nu_m_rho, rho)
                   )*adj(link(U_v, x_p_nu, mu))*adj(link(U_v, x, nu));
           }
-          if constexpr(term==5) {
+          if (term==5) {
             res = (link(U_v, x_p_mu, rho)
                   *(link(U_v, x_p_mu_p_rho, sig)
                   *link(XY_v, x_p_mu_m_nu_p_rho_p_sig, nu)
@@ -704,7 +720,7 @@ void hisqSevenLinkDeriv(
                   )*link(U_v, x_p_mu_m_nu_m_rho, rho)
                   )*adj(link(U_v, x_m_nu, mu))*link(U_v, x_m_nu, nu);
           }
-          if constexpr(term==6) {
+          if (term==6) {
             res = link(U_v, x_p_mu, nu)
                   *(link(U_v, x_p_mu_p_nu, rho)
                   *(link(U_v, x_p_mu_p_nu_p_rho, sig)
@@ -724,7 +740,7 @@ void hisqSevenLinkDeriv(
                   )*link(U_v, x_p_nu_m_rho, rho)
                   )*adj(link(U_v, x, nu));
           }
-          if constexpr(term==7) {
+          if (term==7) {
             res = adj(link(U_v, x_p_mu_m_nu, nu))
                   *(link(U_v, x_p_mu_m_nu, rho)
                   *(link(U_v, x_p_mu_m_nu_p_rho, sig)
@@ -744,7 +760,7 @@ void hisqSevenLinkDeriv(
                   )*link(U_v, x_m_nu_m_rho, rho)
                   )*link(U_v, x_m_nu, nu);
           }
-          if constexpr(term==8) {
+          if (term==8) {
             res = link(U_v, x_p_mu, nu)*adj(link(U_v, x_p_nu, mu))
                   *(link(U_v, x_p_nu, rho)
                   *(link(U_v, x_p_nu_p_rho, sig)
@@ -763,7 +779,7 @@ void hisqSevenLinkDeriv(
                   *link(U_v, x_m_rho_m_sig, sig)
                   )*link(U_v, x_m_rho, rho));
           }
-          if constexpr(term==9) {
+          if (term==9) {
             res = adj(link(U_v, x_p_mu_m_nu, nu))*adj(link(U_v, x_m_nu, mu))
                   *(link(U_v, x_m_nu, rho)
                   *(link(U_v, x_m_nu_p_rho, sig)
@@ -782,7 +798,7 @@ void hisqSevenLinkDeriv(
                   *link(U_v, x_m_rho_m_sig, sig)
                   )*link(U_v, x_m_rho, rho));
           }
-          if constexpr(term==10) {
+          if (term==10) {
             U1 = adj(link(U_v, x_p_nu, mu));
             res = (link(U_v, x_p_mu, sig)
                   *link(U_v, x_p_mu_p_sig, nu)
@@ -799,7 +815,7 @@ void hisqSevenLinkDeriv(
                   *adj(link(U_v, x_p_mu_p_nu, sig))
                   )*U1*adj(link(U_v, x_p_nu_m_rho, rho))*link(XY_v, x_m_rho, nu)*link(U_v, x_m_rho, rho);
           }
-          if constexpr(term==11) {
+          if (term==11) {
             U1 = adj(link(U_v, x_m_nu, mu));
             res = (link(U_v, x_p_mu, sig)
                   *adj(link(U_v, x_p_mu_m_nu_p_sig, nu))
@@ -816,7 +832,7 @@ void hisqSevenLinkDeriv(
                   *link(U_v, x_p_mu_m_nu_m_sig, sig)
                   )*U1*adj(link(U_v, x_m_nu_m_rho, rho))*adj(link(XY_v, x_m_nu_m_rho, nu))*link(U_v, x_m_rho, rho);
           }
-          if constexpr(term==12) {
+          if (term==12) {
             res = (link(U_v, x_p_mu, rho)
                   *(link(U_v, x_p_mu_p_rho, sig)
                   *link(U_v, x_p_mu_p_rho_p_sig, nu)
@@ -835,7 +851,7 @@ void hisqSevenLinkDeriv(
                   )*link(U_v, x_p_mu_p_nu_m_rho, rho)
                   )*adj(link(U_v, x_p_nu, mu))*link(XY_v, x, nu);
           }
-          if constexpr(term==13) {
+          if (term==13) {
             res = (adj(link(U_v, x_p_mu_m_rho, rho))
                   *(link(U_v, x_p_mu_m_rho, sig)
                   *adj(link(U_v, x_p_mu_m_nu_m_rho_p_sig, nu))
@@ -866,6 +882,7 @@ inline std::vector<Coordinate> createHISQLepageSmearStencil() {
   std::vector<Coordinate> shifts;
   for (int mu = 0; mu < Nd; mu++) {
     for (int nu = 0; nu < Nd; nu++) {
+      if (nu == mu) continue;
       hisqAppendShift(shifts, shiftSignal::NO_SHIFT);   // 0: x
       hisqAppendShift(shifts, nu);                      // 1: x+nu
       hisqAppendShift(shifts, nu, nu);                  // 2: x+2nu
@@ -881,7 +898,8 @@ inline std::vector<Coordinate> createHISQLepageSmearStencil() {
 }
 
 accelerator_inline int hisqStencilIndexLepageSmear(int mu, int nu) {
-  return 9*(nu + Nd*mu);
+  int nu_rank = nu - (nu > mu ? 1 : 0);
+  return 9*(nu_rank + 3*mu);
 }
 
 template<class GF>
@@ -972,6 +990,7 @@ inline std::vector<Coordinate> createHISQLepageStencil() {
   std::vector<Coordinate> shifts;
   for (int mu = 0; mu < Nd; mu++)
   for (int nu = 0; nu < Nd; nu++) {
+    if (nu == mu) continue;
     hisqAppendShift(shifts, Back(mu), Back(nu));       // 0:  -mu-nu
     hisqAppendShift(shifts, Back(mu));                  // 1:  -mu
     hisqAppendShift(shifts, Back(mu), nu);              // 2:  -mu+nu
@@ -990,9 +1009,10 @@ inline std::vector<Coordinate> createHISQLepageStencil() {
   return shifts;
 }
 
-// Stencil index for Lepage derivative stencil (14 entries per (mu, nu) pair)
+// Compact stencil index for Lepage derivative stencil (14 entries × 12 valid pairs = 168 shifts)
 accelerator_inline int hisqStencilIndexLepage(int mu, int nu) {
-  return 14*(nu + Nd*mu);
+  int nu_rank = nu - (nu > mu ? 1 : 0);
+  return 14*(nu_rank + 3*mu);
 }
 
 template<int term, class GF>
@@ -1036,7 +1056,7 @@ void hisqLepageDeriv(
 
       res = Zero();
 
-      if constexpr(term==0) {
+      if (term==0) {
         res += link(U_v, x, mu) * adj(link(XY_v, x_p_mu, nu)) * adj(link(U_v, x_p_mu, nu));
         res += link(U_v, x, mu) * link(XY_v, x_p_mu_m_nu, nu) * link(U_v, x_p_mu_m_nu, nu);
         res += link(U_v, x, nu) * link(XY_v, x, nu) * link(U_v, x, mu);
@@ -1047,7 +1067,7 @@ void hisqLepageDeriv(
         res += link(XY_v, x_m_nu, nu) * link(U_v, x_m_nu, nu) * link(U_v, x, mu);
       }
 
-      if constexpr(term==1) {
+      if (term==1) {
         res += adj(link(U_v, x_m_mu, mu)) * adj(link(XY_v, x_m_mu, nu))
              * link(U_v, x_m_mu_p_nu, mu) * link(U_v, x_p_nu, mu) * adj(link(U_v, x_p_mu, nu));
         res += adj(link(U_v, x_m_mu, mu)) * link(XY_v, x_m_mu_m_nu, nu)
@@ -1060,7 +1080,7 @@ void hisqLepageDeriv(
              * adj(link(U_v, x_p_mu_p_nu, nu)) * adj(link(U_v, x_p_mu, nu));
       }
 
-      if constexpr(term==2) {
+      if (term==2) {
         res += adj(link(U_v, x_m_nu, nu)) * adj(link(U_v, x_m_2nu, nu)) * adj(link(XY_v, x_m_2nu, mu))
              * link(U_v, x_p_mu_m_2nu, nu) * link(U_v, x_p_mu_m_nu, nu);
         res += adj(link(U_v, x_m_mu, mu)) * link(U_v, x_m_mu, nu)

@@ -34,12 +34,12 @@ directory
  * within Grid. The interface itself is composed of a single core component class
  * 
  * * HighlyImprovedStaggeredFermionImpl: Class providing support for highly
- *   improved staggered fermions in Grid. Exposes methods for fat7/asqtad 
+ *   improved staggered fermions in Grid. EXtoses methods for fat7/asqtad 
  *   smearing and its derivative with optional inclusion of Lepage term needed 
  *   for second level of HISQ smearing. 
  * 
  * References:
- * * Quantum EXpressions (QEX): https://github.com/jcosborn/qex
+ * * Quantum EXtressions (QEX): https://github.com/jcosborn/qex
  * * QOPQDP [SciDAC]: https://github.com/usqcd-software/qopqdp
  * * SIMULATEeQCD: https://github.com/LatticeQCD/SIMULATeQCD
  * * Follana, E. et al.: https://doi.org/10.1103/PhysRevD.75.054502
@@ -94,7 +94,7 @@ NAMESPACE_BEGIN(Grid);
 // encapsulates conditional execution of Naik calculations for cleanliness
 #define HISQNAIK(exec) if (ctx.naik != 0.0) { HISQLOOP0(exec) } \
 
-// better notation for ternary expression
+// better notation for ternary eXtression
 #define when(cond, valTrue, valFalse) ((cond) ? (valTrue) : (valFalse)) \
 
 //
@@ -262,7 +262,7 @@ class HighlyImprovedStaggeredFermionImpl: Gimpl {
  * @brief Highly improved staggered fermion implementation in Grid
  * @author Curtis Taylor Peterson
  * @details
- * Highly improved staggered fermion (HISF/HISQ) implementation in Grid. Exposes 
+ * Highly improved staggered fermion (HISF/HISQ) implementation in Grid. EXtoses 
  * methods for FNAL/MILC and non-FNAL/MILC implementations of Highly Improved Staggered
  * Fermions. This class boasts an implementation of HISQ that is low in communication 
  * overhead whilst retaining a low memory footprint by Grid's PaddedCell and 
@@ -283,6 +283,57 @@ public:
   StaggeredPhases stagPhases;
 
 private:
+  // vvv ONLY USED IN smearI & smearDerivativeI vvv
+  std::unique_ptr<PaddedCell> _cell;
+  std::unique_ptr<GeneralLocalStencil> _stencil3;
+  std::unique_ptr<GeneralLocalStencil> _stencil5;
+  std::unique_ptr<GeneralLocalStencil> _stencil7;
+  std::unique_ptr<GeneralLocalStencil> _stencilLpSmear;
+  std::unique_ptr<GeneralLocalStencil> _stencilLp;
+  std::unique_ptr<GeneralLocalStencil> _stencilNk;
+  int _depth = -1;
+
+private:
+  // vvv ONLY USED IN smearI & smearDerivativeI vvv
+  void ensureStencils(GridCartesian* cgrid, int depth, bool needsDerivStencils, bool hasLepage, bool hasNaik) {
+    if (_depth == depth && _cell) {
+      // Already have stencils for this depth; build any missing ones
+      auto* pg = _cell->grids.back();
+      if (needsDerivStencils && !_stencil5) {
+        _stencil5 = std::make_unique<GeneralLocalStencil>(pg, createHISQStencil(5));
+        _stencil7 = std::make_unique<GeneralLocalStencil>(pg, createHISQStencil(7));
+      }
+      if (hasLepage && !_stencilLp)
+        _stencilLp = std::make_unique<GeneralLocalStencil>(pg, createHISQLepageStencil());
+      if (hasLepage && !_stencilLpSmear)
+        _stencilLpSmear = std::make_unique<GeneralLocalStencil>(pg, createHISQLepageSmearStencil());
+      if (hasNaik && !_stencilNk)
+        _stencilNk = std::make_unique<GeneralLocalStencil>(pg, createHISQNaikStencil());
+      return;
+    }
+
+    // New depth or first call: rebuild everything
+    _cell = std::make_unique<PaddedCell>(depth, cgrid);
+    auto* pg = _cell->grids.back();
+    _stencil3 = std::make_unique<GeneralLocalStencil>(pg, createHISQStencil(3));
+    _stencil5.reset();
+    _stencil7.reset();
+    _stencilLpSmear.reset();
+    _stencilLp.reset();
+    _stencilNk.reset();
+    if (needsDerivStencils) {
+      _stencil5 = std::make_unique<GeneralLocalStencil>(pg, createHISQStencil(5));
+      _stencil7 = std::make_unique<GeneralLocalStencil>(pg, createHISQStencil(7));
+    }
+    if (hasLepage) {
+      _stencilLpSmear = std::make_unique<GeneralLocalStencil>(pg, createHISQLepageSmearStencil());
+      _stencilLp = std::make_unique<GeneralLocalStencil>(pg, createHISQLepageStencil());
+    }
+    if (hasNaik)
+      _stencilNk = std::make_unique<GeneralLocalStencil>(pg, createHISQNaikStencil());
+    _depth = depth;
+  }
+
   void init(GridCartesian* grid, bool calculateStaggeredPhases) {
     assert(Nc == 3 && "HISQ only suppored for SU(3)");
     assert(Nd == 4 && "HISQ only supported for 4 dimensions");
@@ -295,17 +346,13 @@ public:
     GridCartesian* grid, 
     const StaggeredImplParams params,
     bool calculateStaggeredPhases = true
-  ):
-    stagPhases(Nd, grid), 
-    params(params)
+  ): stagPhases(Nd, grid), params(params)
   { init(grid, calculateStaggeredPhases); }
 
   HighlyImprovedStaggeredFermionImpl(
     GridCartesian* grid,
     bool calculateStaggeredPhases = true
-  ):
-    stagPhases(Nd, grid), 
-    params(StaggeredImplParams({1, 1, 1, -1}))
+  ): stagPhases(Nd, grid), params(StaggeredImplParams({1, 1, 1, -1}))
   { init(grid, calculateStaggeredPhases); }
 
 private:
@@ -395,59 +442,57 @@ public:
      * share a single PaddedCell with depth 2 when Lepage or Naik has a
      * nonzero prefactor, otherwise depth 1.
      */
+    tracePush("HighlyImprovedStaggeredFermionImpl::smearI");
     GridCartesian* cgrid = dynamic_cast<GridCartesian*>(W.Grid());
 
     // Lepage and Naik access x±2nu / x±2mu, requiring depth-2 halo.
     int depth = ((ctx.lepage != 0.0) or (ctx.naik != 0.0)) ? 2 : DEPTH;
 
+    // ensure cached PaddedCell and stencils are built
+    ensureStencils(cgrid, depth, false, ctx.lepage != 0.0, ctx.naik != 0.0);
+
     // exchange into padded cell (single halo communication)
-    PaddedCell Ghost(depth, cgrid);
-    GaugeField Ughost = Ghost.Exchange(W);
+    GaugeField Wt = _cell->Exchange(W);
 
     // auxiliary fields on padded grid
-    GaugeField Ughost_fat(Ughost.Grid());
-    GaugeField Ughost_3link(Ughost.Grid());
-    GaugeField Ughost_5linkA(Ughost.Grid());
-    GaugeField Ughost_5linkB(Ughost.Grid());
+    GaugeField Xt(Wt.Grid());
+    GaugeField X3(Wt.Grid());
+    GaugeField X5A(Wt.Grid());
+    GaugeField X5B(Wt.Grid());
 
-    // create 3-link stencil (also used by 5- and 7-link kernels)
-    std::vector<Coordinate> shifts = createHISQStencil(3);
-    GeneralLocalStencil gStencil(Ughost.Grid(), shifts);
+    // accumulate 3-, 5-, and 7-link
+    Xt = Zero();
+    for (int mu = 0; mu < Nd; ++mu) {
+      X3 = Zero(), X5A = Zero(), X5B = Zero();
 
-    // create Lepage smear stencil (independent of 3-link)
-    std::vector<Coordinate> lepageShifts = createHISQLepageSmearStencil();
-    GeneralLocalStencil gStencilLP(Ughost.Grid(), lepageShifts);
-
-    // accumulate 3-, 5-, 7-link, and Lepage contributions
-    tracePush("HighlyImprovedStaggeredFermionImpl::smearStencil");
-    Ughost_fat = Zero();
-    for (int mu = 0; mu < Nd; mu++) {
-      Ughost_3link = Zero();
-      Ughost_5linkA = Zero();
-      Ughost_5linkB = Zero();
-
-      if (ctx.c1 != 0) hisqThreeLinkStaple(Ughost_fat, Ughost_3link, Ughost, gStencil, mu, ctx.c1);
-      if (ctx.c2 != 0) hisqFiveLinkStaple(Ughost_fat, Ughost_5linkA, Ughost_5linkB, Ughost_3link, Ughost, gStencil, mu, ctx.c2);
-      if (ctx.c3 != 0) hisqSevenLinkStaple(Ughost_fat, Ughost_5linkA, Ughost_5linkB, Ughost, gStencil, mu, ctx.c3);
-      if (ctx.lepage != 0) hisqLepageSmear(Ughost_fat, Ughost, gStencilLP, mu, ctx.lepage);
+      if (ctx.c1 != 0) hisqThreeLinkStaple(Xt, X3, Wt, *_stencil3, mu, ctx.c1);
+      if (ctx.c2 != 0) hisqFiveLinkStaple(Xt, X5A, X5B, X3, Wt, *_stencil3, mu, ctx.c2);
+      if (ctx.c3 != 0) hisqSevenLinkStaple(Xt, X5A, X5B, Wt, *_stencil3, mu, ctx.c3);
     }
 
-    // extract + add 1-link
-    // hisqLepageSmear computes only the genuine 5-link paths (UU+LL),
-    // so no degenerate 1-link compensation is needed — use c0 directly.
-    X = Ghost.Extract(Ughost_fat) + ctx.c0*W;
+    // Lepage term
+    if (ctx.lepage != 0.0) {
+      for (int mu = 0; mu < Nd; ++mu) 
+        hisqLepageSmear(Xt, Wt, *_stencilLpSmear, mu, ctx.lepage);
+    }
 
-    // Naik term via stencil kernel (requires depth 2)
+    // extract
+    X = _cell->Extract(Xt) + ctx.c0*W;
+
+    // Naik term
     if (ctx.naik != 0.0) {
-      GaugeField Wghost(Ughost.Grid());
-      Wghost = Zero();
-      std::vector<Coordinate> naikShifts = createHISQNaikStencil();
-      GeneralLocalStencil gStencilNaik(Ughost.Grid(), naikShifts);
-      for (int mu = 0; mu < Nd; mu++)
-        hisqNaikSmear(Wghost, Ughost, gStencilNaik, mu, ctx.naik);
-      WWW = Ghost.Extract(Wghost);
+      GaugeField WWWt(Wt.Grid());
+
+      // accumulate Naik contribution
+      WWWt = Zero();
+      for (int mu = 0; mu < Nd; ++mu)
+        hisqNaikSmear(WWWt, Wt, *_stencilNk, mu, ctx.naik);
+      
+      // extract
+      WWW = _cell->Extract(WWWt);
     }
-    tracePop("HighlyImprovedStaggeredFermionImpl::smearStencil");
+
+    tracePop("HighlyImprovedStaggeredFermionImpl::smearI");
   }
 
   void smearII(
@@ -463,7 +508,7 @@ public:
      * Fat7/Asqtad links can be constructed recursively from 3-link smears. This 
      * insight is attributed to James Osborn (Argonne National Laboratory),
      * who used it to implement the Fat7/Asqtad smearing in QOPQDP and Qauntum
-     * EXpressions (QEX). This method follows a similar pattern to James' 
+     * EXtressions (QEX). This method follows a similar pattern to James' 
      * implementation and combines it with Grid's padded cell. Note that many other 
      * codes, such as MILC, use a "path-based" approach by default, which tend to
      * less efficiently reuse computations from lower levels in the smearing.
@@ -476,7 +521,7 @@ public:
      * (3) Sνj(n) := Sj(Sν;n),
      * and
      * (4) Sνij(n) := Si(Sνj;n).
-     * Then an fat7 link Vμ(n) in four dimensions can be expressed as a composition 
+     * Then an fat7 link Vμ(n) in four dimensions can be eXtressed as a composition 
      * of sums
      * (5) Vμ(n) = c0 Uμ(n)            [5a]
      *     + ∑_{ν≠μ}(c1 Sν(n)          [5b]
@@ -499,10 +544,12 @@ public:
      * communication overhead dramatically.
      * 
      * References:
-     * * Quantum EXpressions (QEX): https://github.com/jcosborn/qex
+     * * Quantum EXtressions (QEX): https://github.com/jcosborn/qex
      * * QOPQDP [SciDAC]: https://github.com/usqcd-software/qopqdp
      * * Follana, E. et al.: https://doi.org/10.1103/PhysRevD.75.054502
      */
+    tracePush("HighlyImprovedStaggeredFermionImpl::smearII");
+
     PaddedCell cell(DEPTH, ugrid);
     PeriodicBC::Transporters<Gimpl> w(cell, W);
     GridBase* pgrid = (GridBase*)cell.grids.back();
@@ -510,7 +557,6 @@ public:
     GaugeLinkField s3(pgrid), s5(pgrid);
     
     // 1-, 3-, 5-, and 7-link terms + lepage
-    tracePush("HighlyImprovedStaggeredFermionImpl::smear");
     HISQLOOP0( // Eqn 5a
       x[mu] = (ctx.c0 - 6.0*ctx.lepage)*w.link(mu);
       HISQLOOP1( // Eqn 5b
@@ -527,7 +573,8 @@ public:
     // Naik term
     HISQNAIK(x[mu] = ctx.naik*w.CovShiftFwd(mu, w.exchange(w.CovShiftFwd(mu), mu)))
     if (ctx.naik != 0.0) WWW = w.toTightGrid(toGauge(x));
-    tracePop("HighlyImprovedStaggeredFermionImpl::smear");
+
+    tracePop("HighlyImprovedStaggeredFermionImpl::smearII");
   }
 
   void smear(
@@ -535,7 +582,7 @@ public:
     GaugeField& WWW,
     const GaugeField& W,
     const HISFContext ctx
-  ) {
+  ) { 
 #if defined(GRID_SYCL) || defined(GRID_CUDA) || defined(GRID_HIP)
     smearI(X, WWW, W, ctx);
 #else
@@ -593,83 +640,71 @@ public:
      * All operations share a single PaddedCell with depth 2 when Lepage or
      * Naik has a nonzero prefactor, otherwise depth 1.
      */
+    tracePush("HighlyImprovedStaggeredFermionImpl::smearDerivativeI");
+
     GridCartesian* cgrid = dynamic_cast<GridCartesian*>(W.Grid());
 
     int depth = ((ctx.lepage != 0.0) or (ctx.naik != 0.0)) ? 2 : DEPTH;
-    PaddedCell Ghost(depth, cgrid);
 
-    GaugeField Ughost  = Ghost.Exchange(W);
-    GaugeField adjdSdX(dSdX.Grid());
-    for (int mu = 0; mu < Nd; mu++)
-      PokeIndex<LorentzIndex>(adjdSdX, adj(PeekIndex<LorentzIndex>(dSdX, mu)), mu);
-    GaugeField XYghost = Ghost.Exchange(adjdSdX);
-    GaugeField Fghost(Ughost.Grid());
-    Fghost = Zero();
+    // ensure cached PaddedCell and stencils are built
+    ensureStencils(cgrid, depth, true, ctx.lepage != 0.0, ctx.naik != 0.0);
 
-    // create stencils for 3-, 5-, 7-link derivatives
-    std::vector<Coordinate> shifts3 = createHISQStencil(3);
-    std::vector<Coordinate> shifts5 = createHISQStencil(5);
-    std::vector<Coordinate> shifts7 = createHISQStencil(7);
-    GeneralLocalStencil gStencil3(Ughost.Grid(), shifts3);
-    GeneralLocalStencil gStencil5(Ughost.Grid(), shifts5);
-    GeneralLocalStencil gStencil7(Ughost.Grid(), shifts7);
+    GaugeField Wt  = _cell->Exchange(W);
+    GaugeField adjdSdX = adj(dSdX);
+    GaugeField dSdXt = _cell->Exchange(adjdSdX);
+    GaugeField dSdUt(Wt.Grid());
+    dSdUt = Zero();
 
-    // Lepage stencil (17 entries per (mu,nu), 5-link structure with rho=nu)
-    std::vector<Coordinate> shiftsLP = createHISQLepageStencil();
-    GeneralLocalStencil gStencilLP(Ughost.Grid(), shiftsLP);
+    // accumulate n-link derivative contributions
+    for (int mu = 0; mu < Nd; ++mu) {
+      if (ctx.c1 != 0.0)
+        hisqThreeLinkDeriv(dSdUt, Wt, dSdXt, *_stencil3, ctx.c1, mu);
+      if (ctx.c2 != 0.0) {
+        hisqFiveLinkDeriv<0>(dSdUt, Wt, dSdXt, *_stencil5, ctx.c2, mu);
+        hisqFiveLinkDeriv<1>(dSdUt, Wt, dSdXt, *_stencil5, ctx.c2, mu);
+      }
+      if (ctx.c3 != 0.0) {
+        hisqSevenLinkDeriv<0> (dSdUt, Wt, dSdXt, *_stencil7, ctx.c3, mu);
+        hisqSevenLinkDeriv<1> (dSdUt, Wt, dSdXt, *_stencil7, ctx.c3, mu);
+        hisqSevenLinkDeriv<2> (dSdUt, Wt, dSdXt, *_stencil7, ctx.c3, mu);
+        hisqSevenLinkDeriv<3> (dSdUt, Wt, dSdXt, *_stencil7, ctx.c3, mu);
+        hisqSevenLinkDeriv<4> (dSdUt, Wt, dSdXt, *_stencil7, ctx.c3, mu);
+        hisqSevenLinkDeriv<5> (dSdUt, Wt, dSdXt, *_stencil7, ctx.c3, mu);
+        hisqSevenLinkDeriv<6> (dSdUt, Wt, dSdXt, *_stencil7, ctx.c3, mu);
+        hisqSevenLinkDeriv<7> (dSdUt, Wt, dSdXt, *_stencil7, ctx.c3, mu);
+        hisqSevenLinkDeriv<8> (dSdUt, Wt, dSdXt, *_stencil7, ctx.c3, mu);
+        hisqSevenLinkDeriv<9> (dSdUt, Wt, dSdXt, *_stencil7, ctx.c3, mu);
+        hisqSevenLinkDeriv<10>(dSdUt, Wt, dSdXt, *_stencil7, ctx.c3, mu);
+        hisqSevenLinkDeriv<11>(dSdUt, Wt, dSdXt, *_stencil7, ctx.c3, mu);
+        hisqSevenLinkDeriv<12>(dSdUt, Wt, dSdXt, *_stencil7, ctx.c3, mu);
+        hisqSevenLinkDeriv<13>(dSdUt, Wt, dSdXt, *_stencil7, ctx.c3, mu);
+    } }
 
-    // Naik stencil + exchanged Naik chain rule field on same padded grid
-    std::vector<Coordinate> naikShifts = createHISQNaikStencil();
-    GeneralLocalStencil gStencilNaik(Ughost.Grid(), naikShifts);
-    GaugeField XYghost_naik(Ughost.Grid());
+    // Lepage term
+    if (ctx.lepage != 0.0) {
+      for (int mu = 0; mu < Nd; ++mu) {
+        hisqLepageDeriv<0>(dSdUt, Wt, dSdXt, *_stencilLp, ctx.lepage, mu);
+        hisqLepageDeriv<1>(dSdUt, Wt, dSdXt, *_stencilLp, ctx.lepage, mu);
+        hisqLepageDeriv<2>(dSdUt, Wt, dSdXt, *_stencilLp, ctx.lepage, mu);
+    } }
+
+    // Naik term
     if (ctx.naik != 0.0) {
-      GaugeField adjdSdWWW(dSdWWW.Grid());
-      for (int mu = 0; mu < Nd; mu++)
-        PokeIndex<LorentzIndex>(adjdSdWWW, adj(PeekIndex<LorentzIndex>(dSdWWW, mu)), mu);
-      XYghost_naik = Ghost.Exchange(adjdSdWWW);
+      GaugeField dSdXtNk(Wt.Grid());
+
+      // adjoint
+      GaugeField adjdSdWWW = adj(dSdWWW);
+      dSdXtNk = _cell->Exchange(adjdSdWWW);
+
+      // accumulate Naik contribution
+      for (int mu = 0; mu < Nd; ++mu)
+        hisqNaikDeriv(dSdUt, Wt, dSdXtNk, *_stencilNk, ctx.naik, mu);
     }
 
-    // accumulate N-link derivative contributions
-    tracePush("HighlyImprovedStaggeredFermionImpl::smearDerivativeStencil");
-    for (int mu = 0; mu < Nd; mu++) {
-      if (ctx.c1 != 0)
-        hisqThreeLinkDeriv(Fghost, Ughost, XYghost, gStencil3, ctx.c1, mu);
-      if (ctx.c2 != 0) {
-        hisqFiveLinkDeriv<0>(Fghost, Ughost, XYghost, gStencil5, ctx.c2, mu);
-        hisqFiveLinkDeriv<1>(Fghost, Ughost, XYghost, gStencil5, ctx.c2, mu);
-      }
-      if (ctx.c3 != 0) {
-        hisqSevenLinkDeriv<0> (Fghost, Ughost, XYghost, gStencil7, ctx.c3, mu);
-        hisqSevenLinkDeriv<1> (Fghost, Ughost, XYghost, gStencil7, ctx.c3, mu);
-        hisqSevenLinkDeriv<2> (Fghost, Ughost, XYghost, gStencil7, ctx.c3, mu);
-        hisqSevenLinkDeriv<3> (Fghost, Ughost, XYghost, gStencil7, ctx.c3, mu);
-        hisqSevenLinkDeriv<4> (Fghost, Ughost, XYghost, gStencil7, ctx.c3, mu);
-        hisqSevenLinkDeriv<5> (Fghost, Ughost, XYghost, gStencil7, ctx.c3, mu);
-        hisqSevenLinkDeriv<6> (Fghost, Ughost, XYghost, gStencil7, ctx.c3, mu);
-        hisqSevenLinkDeriv<7> (Fghost, Ughost, XYghost, gStencil7, ctx.c3, mu);
-        hisqSevenLinkDeriv<8> (Fghost, Ughost, XYghost, gStencil7, ctx.c3, mu);
-        hisqSevenLinkDeriv<9> (Fghost, Ughost, XYghost, gStencil7, ctx.c3, mu);
-        hisqSevenLinkDeriv<10>(Fghost, Ughost, XYghost, gStencil7, ctx.c3, mu);
-        hisqSevenLinkDeriv<11>(Fghost, Ughost, XYghost, gStencil7, ctx.c3, mu);
-        hisqSevenLinkDeriv<12>(Fghost, Ughost, XYghost, gStencil7, ctx.c3, mu);
-        hisqSevenLinkDeriv<13>(Fghost, Ughost, XYghost, gStencil7, ctx.c3, mu);
-      }
-      if (ctx.lepage != 0) {
-        hisqLepageDeriv<0>(Fghost, Ughost, XYghost, gStencilLP, ctx.lepage, mu);
-        hisqLepageDeriv<1>(Fghost, Ughost, XYghost, gStencilLP, ctx.lepage, mu);
-        hisqLepageDeriv<2>(Fghost, Ughost, XYghost, gStencilLP, ctx.lepage, mu);
-      }
-      if (ctx.naik != 0)
-        hisqNaikDeriv(Fghost, Ughost, XYghost_naik, gStencilNaik, ctx.naik, mu);
-    }
+    // extract
+    dXdU = adj(_cell->Extract(dSdUt)) + ctx.c0*dSdX;
 
-    GaugeField stencilResult = Ghost.Extract(Fghost);
-    dXdU = Zero();
-    for (int mu = 0; mu < Nd; mu++)
-      PokeIndex<LorentzIndex>(dXdU, adj(PeekIndex<LorentzIndex>(stencilResult, mu)), mu);
-
-    dXdU = dXdU + ctx.c0*dSdX;
-    tracePop("HighlyImprovedStaggeredFermionImpl::smearDerivativeStencil");
+    tracePop("HighlyImprovedStaggeredFermionImpl::smearDerivativeI");
   }
 
   void smearDerivativeII(
@@ -686,7 +721,7 @@ public:
      * Calculates Wirtinger derivative of fat7/asqtad + Lepage links, including chain
      * rule. See the comments under `smear` method for details on fat7/asqtad + 
      * Lepage smearing. This method was originally implemented by translating the
-     * "effective 3-link" force in QOP/QDP and Quantum EXpressions (QEX) written by 
+     * "effective 3-link" force in QOP/QDP and Quantum EXtressions (QEX) written by 
      * James Osborn (Argonne National Laboratory) into Grid. It was then reworked to 
      * make full use of thevpadded cells in Grid, which resulted in an algorithm that 
      * is similar in spirit to that in QOP/QDP and QEX, but which deviates in how it 
@@ -748,10 +783,12 @@ public:
      * questions that may arise.
      * 
      * References:
-     * * Quantum EXpressions (QEX): https://github.com/jcosborn/qex
+     * * Quantum EXtressions (QEX): https://github.com/jcosborn/qex
      * * QOPQDP [SciDAC]: https://github.com/usqcd-software/qopqdp
      * * Follana, E. et al.: https://doi.org/10.1103/PhysRevD.75.054502
      */
+    tracePush("HighlyImprovedStaggeredFermionImpl::smearDerivativeII");
+
     PaddedCell cell(DEPTH, ugrid);
     PeriodicBC::Transporters<Gimpl> w(cell, W);
     GridBase* pgrid = (GridBase*)cell.grids.back();
@@ -762,7 +799,6 @@ public:
     GaugeLinkField dnu(pgrid), di(pgrid), dj(pgrid);
 
     // fat7 + lepage (lepage won't execute if lepage == 0.0)
-    tracePush("HighlyImprovedStaggeredFermionImpl::smearDerivative");
     HISQLOOP0( 
       dxdu[mu] = (ctx.c0 - 6.0*ctx.lepage)*dxdw[mu];
       HISQLOOP1(
@@ -804,10 +840,11 @@ public:
         } else { snu = w.CovShiftIdentBck(mu, w.exchange(adj(sj)*snu*si, mu)); }
         dxdu[mu] += ctx.naik*adj(snu);
     } )
-    tracePop("HighlyImprovedStaggeredFermionImpl::smearDerivative");
 
     // extract from padded grid
     dXdU = w.toTightGrid(toGauge(dxdu));
+
+    tracePop("HighlyImprovedStaggeredFermionImpl::smearDerivativeII");
   }
 
   void smearDerivative(
@@ -816,13 +853,7 @@ public:
     const GaugeField& dSdWWW,
     const GaugeField& W,
     const HISFContext ctx
-  ) {
-#if defined(GRID_SYCL) || defined(GRID_CUDA) || defined(GRID_HIP)
-    smearDerivativeI(dXdU, dSdX, dSdWWW, W, ctx);
-#else
-    smearDerivativeII(dXdU, dSdX, dSdWWW, W, ctx);
-#endif
-  }
+  ) { smearDerivativeII(dXdU, dSdX, dSdWWW, W, ctx); }
 
   void smearDerivative(
     GaugeField& dXdU,
