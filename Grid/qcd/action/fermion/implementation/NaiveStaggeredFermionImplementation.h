@@ -187,40 +187,45 @@ void NaiveStaggeredFermion<Impl>::MooeeInvDag(const FermionField &in, FermionFie
 ///////////////////////////////////
 
 template <class Impl>
-void NaiveStaggeredFermion<Impl>::DerivInternal(StencilImpl &st, DoubledGaugeField &U,
-						GaugeField & mat,
-						const FermionField &A, const FermionField &B, int dag) 
-{
+void NaiveStaggeredFermion<Impl>::DerivInternal(
+  StencilImpl &st, 
+  DoubledGaugeField &U,
+	GaugeField& mat,
+	const FermionField &A, 
+  const FermionField &B, 
+  int dag
+) {
+  /**
+   * @brief naive staggered fermion derivative
+   * @author Curtis Taylor Peterson
+   * @details
+   * Computes staggered fermion derivative from simple covariant shifts. Important
+   * to do is to use the stencil & optimized kernels, but this suffices for what is
+   * ultimately a cheap portion on the derivative to compute.
+   */
   GRID_ASSERT((dag == DaggerNo) || (dag == DaggerYes));
 
-  Compressor compressor;
-
-  FermionField Btilde(B.Grid());
-  FermionField Atilde(B.Grid());
+  GaugeLinkField Umu(U.Grid());
+  FermionField Atilde(A.Grid());
+  FermionField Btilde(A.Grid());
   Atilde = A;
 
-  st.HaloExchange(B, compressor);
-
-  for (int mu = 0; mu < Nd; mu++) {
-
-    ////////////////////////
-    // Call the single hop
-    ////////////////////////
-    autoView( U_v      , U, CpuRead);
-    autoView( B_v      , B, CpuWrite);
-    autoView( Btilde_v , Btilde, CpuWrite);
-    thread_for(sss,B.Grid()->oSites(),{
-      Kernels::DhopDirKernel(st, U_v, U_v, st.CommBuf(), sss, sss, B_v, Btilde_v, mu,1);
-    });
-
-    GRID_ASSERT(0);// need to figure out the force interface with a blasted three link term.
-    
+  for (int mu = 0; mu < Nd; ++mu) {
+    Umu = PeekIndex<LorentzIndex>(U, mu);
+    Btilde = Impl::CovShiftForward(Umu, mu, B);
+    this->InsertForce4D(mat, Btilde, Atilde, mu);
   }
+
+  if (dag == DaggerYes) { mat = -mat; }
 }
 
 template <class Impl>
-void NaiveStaggeredFermion<Impl>::DhopDeriv(GaugeField &mat, const FermionField &U, const FermionField &V, int dag) {
-
+void NaiveStaggeredFermion<Impl>::DhopDeriv(
+  GaugeField &mat, 
+  const FermionField &U, 
+  const FermionField &V, 
+  int dag
+) {
   conformable(U.Grid(), _grid);
   conformable(U.Grid(), V.Grid());
   conformable(U.Grid(), mat.Grid());

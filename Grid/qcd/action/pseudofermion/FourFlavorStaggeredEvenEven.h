@@ -42,7 +42,7 @@ NAMESPACE_BEGIN(Grid);
 enum Solver {ActionSolve,DerivativeSolve};
 
 template <class Impl>
-class StaggeredEvenEvenPseudoFermionAction: public Action<typename Impl::GaugeField> 
+class FourFlavorStaggeredEvenEvenPseudoFermionAction: public Action<typename Impl::GaugeField> 
 {
 public: INHERIT_IMPL_TYPES(Impl);
 
@@ -57,7 +57,7 @@ public:
   FermionField Phi;
 
 public:
-  StaggeredEvenEvenPseudoFermionAction(
+  FourFlavorStaggeredEvenEvenPseudoFermionAction(
     FermionOperator<Impl> &Op,
     OperatorFunction<FermionField> &DS,
     OperatorFunction<FermionField> &AS
@@ -71,7 +71,7 @@ public:
     Phi = Zero();
   }
 
-  virtual std::string action_name(){ return "StaggeredEvenEvenPseudoFermionAction"; }
+  virtual std::string action_name(){ return "FourFlavorStaggeredEvenEvenPseudoFermionAction"; }
 
   virtual std::string LogParameters()
   {return "type: staggered \"half\" pseudofermion mass: " + std::to_string(mass);}
@@ -195,9 +195,21 @@ private:
     */
     FermionField psi(FermOp.FermionGrid());
     std::vector<FermionField> psiv(Nd,FermOp.FermionGrid());
+    Lattice<iScalar<vInteger>> x(FermOp.FermionGrid()), y(FermOp.FermionGrid()), z(FermOp.FermionGrid()), t(FermOp.FermionGrid()), xyzt(FermOp.FermionGrid());
 
     _solve(psi,DerivativeSolve);
-    FermOp.DhopDeriv(dSdU, psi, psi, DaggerNo);
+    FermOp.MDeriv(dSdU, psi, psi, DaggerNo);
+
+    // rephase odd sites
+    LatticeCoordinate(x, 0);
+    LatticeCoordinate(y, 1);
+    LatticeCoordinate(z, 2);
+    LatticeCoordinate(t, 3);
+    xyzt = x + y + z + t;
+    for (int mu = 0; mu < Nd; ++mu) {
+      GaugeLinkField dSdUmu = PeekIndex<LorentzIndex>(dSdU, mu);
+      PokeIndex<LorentzIndex>(dSdU, where(mod(xyzt, 2) != (Integer)0, dSdUmu, -dSdUmu), mu);
+    }
   }
 
 public:

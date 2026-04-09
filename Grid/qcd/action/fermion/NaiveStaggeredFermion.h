@@ -79,6 +79,7 @@ public:
   void DhopDeriv  (GaugeField &mat, const FermionField &U, const FermionField &V, int dag);
   void DhopDerivOE(GaugeField &mat, const FermionField &U, const FermionField &V, int dag);
   void DhopDerivEO(GaugeField &mat, const FermionField &U, const FermionField &V, int dag);
+  void MDeriv(GaugeField &mat, const FermionField &U, const FermionField &V, int dag) { DhopDeriv(mat, U, V, dag); }
 
   ///////////////////////////////////////////////////////////////
   // non-hermitian hopping term; half cb or both
