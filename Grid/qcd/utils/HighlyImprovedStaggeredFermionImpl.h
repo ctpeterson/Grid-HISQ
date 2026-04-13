@@ -296,8 +296,13 @@ private:
 private:
   // vvv ONLY USED IN smearI & smearDerivativeI vvv
   void ensureStencils(GridCartesian* cgrid, int depth, bool needsDerivStencils, bool hasLepage, bool hasNaik) {
+    /**
+     * @brief cacheing strategy for GeneralLocalStencil objects
+     * @author Curtis Taylor Peterson
+     */
+
+    // Already have stencils for this depth; build any missing ones
     if (_depth == depth && _cell) {
-      // Already have stencils for this depth; build any missing ones
       auto* pg = _cell->grids.back();
       if (needsDerivStencils && !_stencil5) {
         _stencil5 = std::make_unique<GeneralLocalStencil>(pg, createHISQStencil(5));
@@ -425,6 +430,10 @@ public:
   /** @brief rephases gauge links with staggered and Dirichlet boundary phases */
   void rephase(GaugeField& X, const GaugeField& W) 
   { for (int mu = 0; mu < Nd; ++mu) intoGauge(X, stagPhases[mu]*toLink(W, mu), mu); }
+
+//
+// HISQ smearing & unitary projection
+//
 
 public:
   void smearI(
@@ -622,6 +631,10 @@ public:
     UnitaryProjection<Gimpl> projection(projCtx);
     projection.project(V, U);
   }
+
+//
+// HISQ smearing & unitary projection derivatives
+//
 
 public:
   void smearDerivativeI(
@@ -829,7 +842,7 @@ public:
         dxdu[mu] += w.stapleDerivative(w.exchange(snu, mu, nu), dxdw[nu], mu, nu);
     ) )
 
-    // naik ("long link"): communicating
+    // Naik ("long link")
     if (ctx.naik != 0.0) dxdw = toLorentz(w.toPaddedGrid(dSdWWW));
     HISQNAIK( 
       for (int term = 0; term < 3; ++term) { 
@@ -917,6 +930,10 @@ public:
     UnitaryProjection<Gimpl> projection(projCtx);
     projection.derivative(dVdU, dZdV, V, U); 
   }
+
+//
+// MILC interface for HISQ smearing
+//
 
 public:
   void milcSmearDerivative(
