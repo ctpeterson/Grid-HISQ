@@ -195,7 +195,12 @@ private:
     */
     FermionField psi(FermOp.FermionGrid());
     std::vector<FermionField> psiv(Nd,FermOp.FermionGrid());
-    Lattice<iScalar<vInteger>> x(FermOp.FermionGrid()), y(FermOp.FermionGrid()), z(FermOp.FermionGrid()), t(FermOp.FermionGrid()), xyzt(FermOp.FermionGrid());
+    Lattice<iScalar<vInteger>> 
+      x(FermOp.FermionGrid()), 
+      y(FermOp.FermionGrid()), 
+      z(FermOp.FermionGrid()), 
+      t(FermOp.FermionGrid()), 
+      xyzt(FermOp.FermionGrid());
 
     _solve(psi,DerivativeSolve);
     FermOp.MDeriv(dSdU, psi, psi, DaggerNo);

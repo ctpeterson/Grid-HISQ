@@ -73,16 +73,16 @@ NAMESPACE_BEGIN(Grid);
 //
 
 // more readable if statement for plaquette
-#define PLAQUETTE(exec) if (ctx.cp != 0.0) exec;
+#define PLAQUETTE(exec) if (ctx.cp != 0.0) { exec; }
 
 // more readable if statement for rectangle
-#define RECTANGLE(exec) if (ctx.cr != 0.0) exec;
+#define RECTANGLE(exec) if (ctx.cr != 0.0) { exec; }
 
 // more readable if statement for parallelogram
-#define PARALLELOGRAM(exec) if (ctx.cpg != 0.0) exec;
+#define PARALLELOGRAM(exec) if (ctx.cpg != 0.0) { exec; }
 
 // more readable if statement for one-loop
-#define IMPROVED(exec) if ((ctx.cr != 0.0) or (ctx.cpg != 0.0)) exec;
+#define IMPROVED(exec) if ((ctx.cr != 0.0) or (ctx.cpg != 0.0)) { exec; }
 
 //
 // useful data structure for one-loop gauge action
@@ -232,31 +232,31 @@ public:
         PLAQUETTE(action += cp*trace(diag - ta*adj(tb)))
 
         RECTANGLE(
-          tc = u.CovShiftFwd(mu, ta, false);
-          td = u.CovShiftFwd(mu, tb, u.CovShiftIdentFwd(nu, mu), false);
+          tc = u.CovShiftFwd(mu, u.exchange(ta, mu));
+          td = u.CovShiftFwd(mu, tb, u.CovShiftIdentFwd(nu, mu));
           action += cr*trace(diag - tc*adj(td));
 
-          tc = u.CovShiftFwd(nu, tb, false);
-          td = u.CovShiftFwd(nu, ta, u.CovShiftIdentFwd(mu, nu), false);
+          tc = u.CovShiftFwd(nu, u.exchange(tb, nu));
+          td = u.CovShiftFwd(nu, ta, u.CovShiftIdentFwd(mu, nu));
           action += cr*trace(diag - tc*adj(td));
         )
 
-        PARALLELOGRAM(
+        PARALLELOGRAM( // this part is a bit lazy
           for (int i = 0; i < nu; ++i) {
-            tc = u.CovShiftFwd(mu, u.CovShiftFwd(nu, i), false);
-            td = u.CovShiftFwd(i, u.CovShiftFwd(nu, mu), false);
+            tc = u.CovShiftFwd(mu, u.exchange(u.CovShiftFwd(nu, i), mu));
+            td = u.CovShiftFwd(i, u.exchange(u.CovShiftFwd(nu, mu), i));
             action += cpg*trace(diag - tc*adj(td)); // ++
 
-            tc = u.CovShiftFwd(nu, u.CovShiftFwd(i, mu), false);
-            td = u.CovShiftFwd(mu, u.CovShiftFwd(i, nu), false); 
+            tc = u.CovShiftFwd(nu, u.exchange(u.CovShiftFwd(i, mu), nu));
+            td = u.CovShiftFwd(mu, u.exchange(u.CovShiftFwd(i, nu), mu)); 
             action += cpg*trace(diag - tc*adj(td)); // --
 
-            tc = u.CovShiftFwd(i, u.CovShiftFwd(mu, nu), false);
-            td = u.CovShiftFwd(nu, u.CovShiftFwd(mu, i), false);
+            tc = u.CovShiftFwd(i, u.exchange(u.CovShiftFwd(mu, nu), i));
+            td = u.CovShiftFwd(nu, u.exchange(u.CovShiftFwd(mu, i), nu));
             action += cpg*trace(diag - tc*adj(td)); // +-
 
-            tc = u.CovShiftFwd(mu, u.CovShiftBck(nu, i), false);
-            td = u.CovShiftFwd(i, u.CovShiftBck(nu, mu), false);
+            tc = u.CovShiftFwd(mu, u.exchange(u.CovShiftBck(nu, i), mu));
+            td = u.CovShiftFwd(i, u.exchange(u.CovShiftBck(nu, mu), i));
             action += cpg*trace(diag - tc*adj(td)); // -+
         } ) 
     } } 
@@ -315,17 +315,19 @@ public:
         PLAQUETTE(dsdu[mu] += cp*(ta + tb))
 
         IMPROVED(
-          tc = u.rightStaple(mu, nu);
-          td = u.leftStaple(mu, nu);
+          ta = u.exchange(ta);
+          tb = u.exchange(tb);
+          tc = u.exchange(u.rightStaple(mu, nu));
+          td = u.exchange(u.leftStaple(mu, nu));
         )
 
         RECTANGLE(
-          dsdu[mu] += cr*u.upperStaple(u.link(nu), tc, mu, nu, false);
-          dsdu[mu] += cr*u.lowerStaple(u.link(nu), tc, mu, nu, false);
-          dsdu[mu] += cr*u.upperStaple(td, u.link(nu), mu, nu, false);
-          dsdu[mu] += cr*u.lowerStaple(td, u.link(nu), mu, nu, false);
-          dsdu[mu] += cr*u.upperStaple(ta, mu, nu, false);
-          dsdu[mu] += cr*u.lowerStaple(tb, mu, nu, false);
+          dsdu[mu] += cr*u.upperStaple(u.link(nu), tc, mu, nu);
+          dsdu[mu] += cr*u.lowerStaple(u.link(nu), tc, mu, nu);
+          dsdu[mu] += cr*u.upperStaple(td, u.link(nu), mu, nu);
+          dsdu[mu] += cr*u.lowerStaple(td, u.link(nu), mu, nu);
+          dsdu[mu] += cr*u.upperStaple(ta, mu, nu);
+          dsdu[mu] += cr*u.lowerStaple(tb, mu, nu);
         )
 
         // parallelogram preparation
@@ -350,10 +352,10 @@ public:
           if (nu == mu) continue;
           for (int ro = nu + 1; ro < Nd; ++ro) {
             if ((ro == mu) or (ro == nu)) continue;
-            dsdu[mu] += u.staple(sf[mu][ro], sf[nu][ro], u.link(nu), mu, nu, false);
-            dsdu[mu] += u.staple(sf[mu][ro], u.link(nu), sf[nu][ro], mu, nu, false);
-            dsdu[mu] += u.staple(sb[mu][ro], sb[nu][ro], u.link(nu), mu, nu, false);
-            dsdu[mu] += u.staple(sb[mu][ro], u.link(nu), sb[nu][ro], mu, nu, false);
+            dsdu[mu] += u.staple(sf[mu][ro], sf[nu][ro], u.link(nu), mu, nu);
+            dsdu[mu] += u.staple(sf[mu][ro], u.link(nu), sf[nu][ro], mu, nu);
+            dsdu[mu] += u.staple(sb[mu][ro], sb[nu][ro], u.link(nu), mu, nu);
+            dsdu[mu] += u.staple(sb[mu][ro], u.link(nu), sb[nu][ro], mu, nu);
         } }
         dsdu[mu] = -cpg*Ta(dsdu[mu]*adj(u.link(mu)));
       }
@@ -375,35 +377,6 @@ public:
   { deriv(U, dSdU, context); }
 };
 
-template <class Gimpl>
-class PeriodicSymanzikOneLoopGaugeAction: public PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction<Gimpl> {
-/**
- * @brief Symanzik one-loop gauge action implementation in Grid
- * @author Curtis Taylor Peterson
- * @details
- * Wrapper for PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction with one-loop
- * coefficients. Note that bare gauage coupling is normalized such that
- * (1) β = 10/g0^2.
- * This is to be consistent with the MILC code.
- */
-
-public:
-  INHERIT_GIMPL_TYPES(Gimpl);
-
-public:
-  PeriodicSymanzikOneLoopGaugeAction(
-    GridCartesian* tightGrid,
-    RealD beta,
-    RealD u0,
-    int nf
-  ):PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction<Gimpl>(
-      tightGrid, 
-      OneLoopGaugeActionContext(beta, u0, nf)
-    ) { };
-
-public:
-  virtual std::string action_name() { return "PeriodicSymanzikOneLoopGaugeAction"; }
-};
 NAMESPACE_END(Grid);
 
 #endif

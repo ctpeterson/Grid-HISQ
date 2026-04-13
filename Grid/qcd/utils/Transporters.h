@@ -301,7 +301,8 @@ public:
    * Modeled after PaddedCell::Face_exchange but operates in-place.
    */
   template<class vobj>
-  void refresh(Lattice<vobj>& u, int dim) { _pcell->Face_exchange(u, u, dim, depth, true); }
+  void refresh(Lattice<vobj>& u, int dim) 
+  { _pcell->Face_exchange(u, u, dim, depth, true); }
 
   /** @brief directional halo exchange -- single dimension */
   inline GaugeLinkField exchange(GaugeLinkField u, int dim) {
