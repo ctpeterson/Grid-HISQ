@@ -56,9 +56,9 @@ typedef DBW2GaugeAction<PeriodicGimplR>            DBW2GaugeActionR;
 typedef DBW2GaugeAction<PeriodicGimplF>            DBW2GaugeActionF;
 typedef DBW2GaugeAction<PeriodicGimplD>            DBW2GaugeActionD;
 
-typedef PeriodicSymanzikOneLoopGaugeAction<PeriodicGimplR> PeriodicSymanzikOneLoopGaugeActionR;
-typedef PeriodicSymanzikOneLoopGaugeAction<PeriodicGimplF> PeriodicSymanzikOneLoopGaugeActionF;
-typedef PeriodicSymanzikOneLoopGaugeAction<PeriodicGimplD> PeriodicSymanzikOneLoopGaugeActionD;
+typedef PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction<PeriodicGimplR> PeriodicPlaqPlusRectanglePlusParallelogramGaugeActionR;
+typedef PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction<PeriodicGimplF> PeriodicPlaqPlusRectanglePlusParallelogramGaugeActionF;
+typedef PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction<PeriodicGimplD> PeriodicPlaqPlusRectanglePlusParallelogramGaugeActionD;
 
 typedef WilsonGaugeAction<ConjugateGimplR>          ConjugateWilsonGaugeActionR;
 typedef WilsonGaugeAction<ConjugateGimplF>          ConjugateWilsonGaugeActionF;
