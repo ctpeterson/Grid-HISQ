@@ -93,26 +93,12 @@ struct OneLoopGaugeActionContext {
 
   OneLoopGaugeActionContext(RealD beta, RealD cp, RealD cr, RealD cpg): 
     beta(beta), 
-    cp(cp), 
-    cr(cr), 
-    cpg(cpg) { 
-    cp *= beta;
-    cr *= beta;
-    cpg *= beta; 
-  };
+    cp(beta*cp), 
+    cr(beta*cr), 
+    cpg(beta*cpg) { };
 
   OneLoopGaugeActionContext(const OneLoopGaugeActionContext& ctx):
     beta(ctx.beta), cp(ctx.cp), cr(ctx.cr), cpg(ctx.cpg) { };
-  
-  OneLoopGaugeActionContext(RealD beta, RealD u0, int nf): beta(beta) {
-    // Eqn. (A2) of [MILC Collaboration (2010): https://doi.org/10.1103/PhysRevD.82.074501]
-    RealD flavors = RealD(nf);
-    RealD crf = 1. - (0.6264 - 1.1746*flavors)*std::log(u0);
-    RealD cpgf = (0.0433 - 0.0156*flavors)*std::log(u0);
-    cp = beta;
-    cr = -beta*crf/20./u0/u0;
-    cpg = u0 == 1.0 ? 0.0 : beta*cpgf/u0/u0;
-  }
 };
 
 //
@@ -212,7 +198,7 @@ public:
      */
     RealD cp = invNc*ctx.cp/actionNorm;
     RealD cr = invNc*ctx.cr/actionNorm;
-    RealD cpg = 2.0*invNc*ctx.cpg/actionNorm;
+    RealD cpg = invNc*ctx.cpg/actionNorm;
 
     PeriodicBC::Transporters<Gimpl> u(cell, U);
     
@@ -289,7 +275,7 @@ public:
      */
     RealD cp = 0.5*invNc*ctx.cp;
     RealD cr = 0.5*invNc*ctx.cr;
-    RealD cpg = invNc*ctx.cpg;
+    RealD cpg = 0.5*invNc*ctx.cpg;
 
     PeriodicBC::Transporters<Gimpl> u(cell, U); 
     

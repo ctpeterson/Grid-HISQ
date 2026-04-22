@@ -4,6 +4,7 @@ include Make.inc
 
 check: tests
 	./Test_rect_force
+	./Test_plaq_rect_parallelogram_force
 	./Test_gp_rect_force
 	./Test_laplacian_force
 	./Test_wilson_force
