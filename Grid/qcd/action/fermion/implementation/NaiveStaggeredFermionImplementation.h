@@ -190,7 +190,7 @@ template <class Impl>
 void NaiveStaggeredFermion<Impl>::DerivInternal(
   StencilImpl &st, 
   DoubledGaugeField &U,
-	GaugeField& mat,
+	GaugeField &mat,
 	const FermionField &A, 
   const FermionField &B, 
   int dag
@@ -205,18 +205,10 @@ void NaiveStaggeredFermion<Impl>::DerivInternal(
    */
   GRID_ASSERT((dag == DaggerNo) || (dag == DaggerYes));
 
-  GaugeLinkField Umu(U.Grid());
-  FermionField Atilde(A.Grid());
-  FermionField Btilde(A.Grid());
-  Atilde = A;
+  for (int mu = 0; mu < Nd; ++mu) 
+  { pokeLorentz(mat, outerProduct(Impl::CovShiftForward(peekLorentz(U, mu), mu, B), A), mu); }
 
-  for (int mu = 0; mu < Nd; ++mu) {
-    Umu = PeekIndex<LorentzIndex>(U, mu);
-    Btilde = Impl::CovShiftForward(Umu, mu, B);
-    this->InsertForce4D(mat, Btilde, Atilde, mu);
-  }
-
-  if (dag == DaggerYes) { mat = -mat; }
+  if (dag) { mat = -mat; }
 }
 
 template <class Impl>
