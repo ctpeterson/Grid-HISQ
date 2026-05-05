@@ -444,7 +444,7 @@ public:
   ) {
     /**
      * @brief Stencil-based GPU path for fat7/asqtad + Lepage + Naik smearing
-     * @author David Clarke, Curtis Taylor Peterson
+     * @author David Clarke; ported by Curtis Taylor Peterson
      * @details
      * Uses GeneralLocalStencil with pre-computed multi-hop shifts and
      * accelerator_for kernels. All operations (3/5/7-link, Lepage, Naik)
@@ -645,13 +645,16 @@ public:
     const HISFContext ctx
   ) {
     /**
-     * @brief Stencil-based GPU path for fat7/asqtad smearing derivative
-     * @author David Clarke, Curtis Taylor Peterson
+     * @brief Stencil-based path for fat7/asqtad smearing derivative
+     * @author David Clarke; ported by Curtis Taylor Peterson
      * @details
      * Uses GeneralLocalStencil with pre-computed shifts and accelerator_for
      * kernels for 3/5/7-link, Lepage, and Naik chain rule contributions.
      * All operations share a single PaddedCell with depth 2 when Lepage or
      * Naik has a nonzero prefactor, otherwise depth 1.
+     * 
+     * This is less efficient on both GPU and CPU architectures than 
+     * smearDerivativeII, so it should be used only as a crosscheck.
      */
     tracePush("HighlyImprovedStaggeredFermionImpl::smearDerivativeI");
 
@@ -830,7 +833,7 @@ public:
           HISQLOOP3(
             dj = ctx.c3*w.staple(di, nu, j);
             cj = ctx.c3*w.staple(dxdw[mu], mu, j); 
-            sj = ctx.c3*w.exchange(w.staple(nu, j), nu, j); 
+            sj = w.exchange(ctx.c3*w.staple(nu, j), nu, j); 
           )
           dnu += ctx.c2*di + dj;
           cnu += w.staple(w.exchange(ci + cj, mu, i), mu, i); 
