@@ -84,74 +84,88 @@ int main (int argc, char ** argv) {
   LatticeColourMatrixD su(&Grid), sv(&Grid);
   ColourMatrixD sm;
 
-  std::cout << GridLogMessage << "=== singular link stress test ===" << std::endl;
+  // Run all six singular-link projection stress tests for a given projector.
+  auto singularLinkStressTest = [&](
+    const std::string&                 prefix,
+    UnitaryProjection<PeriodicGimplD>& p
+  ) {
+    std::cout << GridLogMessage << "=== singular link stress test: " << prefix << " ===" << std::endl;
 
-  // case 1: one near-zero singular value (sigma_min = 1e-10)
-  sm = Zero();
-  sm()()(0,0) = ComplexD(1.0); sm()()(1,1) = ComplexD(1.0); sm()()(2,2) = ComplexD(1e-10);
-  fillField(su, sm);
-  proj.project(sv, su);
-  {
-    RealD res = unitarityResidual(sv);
-    if (res < stressTol) Grid_pass("sigma={1,1,1e-10} (diag)          : ||VdagV-I||/||I|| = ", res);
-    else                 Grid_error("sigma={1,1,1e-10} (diag)          : ||VdagV-I||/||I|| = ", res);
-  }
-
-  // case 2: rank-2 link (sigma_min = 0 exactly)
-  sm = Zero();
-  sm()()(0,0) = ComplexD(1.0); sm()()(1,1) = ComplexD(1.0);
-  fillField(su, sm);
-  proj.project(sv, su);
-  {
-    RealD res = unitarityResidual(sv);
-    if (res < stressTol) Grid_pass("sigma={1,1,0}    (rank-2)          : ||VdagV-I||/||I|| = ", res);
-    else                 Grid_error("sigma={1,1,0}    (rank-2)          : ||VdagV-I||/||I|| = ", res);
-  }
-
-  // case 3: rank-1 link (two zero singular values)
-  sm = Zero();
-  sm()()(0,0) = ComplexD(1.0);
-  fillField(su, sm);
-  proj.project(sv, su);
-  {
-    RealD res = unitarityResidual(sv);
-    if (res < stressTol) Grid_pass("sigma={1,0,0}    (rank-1)          : ||VdagV-I||/||I|| = ", res);
-    else                 Grid_error("sigma={1,0,0}    (rank-1)          : ||VdagV-I||/||I|| = ", res);
-  }
-
-  // case 4: zero matrix (all singular values = 0)
-  sm = Zero();
-  fillField(su, sm);
-  proj.project(sv, su);
-  {
-    RealD res = unitarityResidual(sv);
-    if (res < stressTol) Grid_pass("sigma={0,0,0}    (zero link)       : ||VdagV-I||/||I|| = ", res);
-    else                 Grid_error("sigma={0,0,0}    (zero link)       : ||VdagV-I||/||I|| = ", res);
-  }
-
-  // case 5: two degenerate near-zero singular values (sigma_1 = sigma_2 = 1e-10)
-  sm = Zero();
-  sm()()(0,0) = ComplexD(1.0); sm()()(1,1) = ComplexD(1e-10); sm()()(2,2) = ComplexD(1e-10);
-  fillField(su, sm);
-  proj.project(sv, su);
-  {
-    RealD res = unitarityResidual(sv);
-    if (res < stressTol) Grid_pass("sigma={1,1e-10,1e-10} (degenerate) : ||VdagV-I||/||I|| = ", res);
-    else                 Grid_error("sigma={1,1e-10,1e-10} (degenerate) : ||VdagV-I||/||I|| = ", res);
-  }
-
-  // case 6: non-diagonal near-singular:  P * diag(1, 1, 1e-10) * P†
-  //         where P is the cyclic permutation matrix
-  {
-    ColourMatrixD P = Zero(), D = Zero();
-    P()()(0,1) = ComplexD(1.0); P()()(1,2) = ComplexD(1.0); P()()(2,0) = ComplexD(1.0);
-    D()()(0,0) = ComplexD(1.0); D()()(1,1) = ComplexD(1.0); D()()(2,2) = ComplexD(1e-10);
-    sm = P * D * adj(P);
+    // case 1: one near-zero singular value (sigma_min = 1e-10)
+    sm = Zero();
+    sm()()(0,0) = ComplexD(1.0); sm()()(1,1) = ComplexD(1.0); sm()()(2,2) = ComplexD(1e-10);
     fillField(su, sm);
-    proj.project(sv, su);
-    RealD res = unitarityResidual(sv);
-    if (res < stressTol) Grid_pass("sigma={1,1,1e-10} (non-diag)      : ||VdagV-I||/||I|| = ", res);
-    else                 Grid_error("sigma={1,1,1e-10} (non-diag)      : ||VdagV-I||/||I|| = ", res);
+    p.project(sv, su);
+    {
+      RealD res = unitarityResidual(sv);
+      if (res < stressTol) Grid_pass("sigma={1,1,1e-10} (diag)          : ||VdagV-I||/||I|| = ", res);
+      else                 Grid_error("sigma={1,1,1e-10} (diag)          : ||VdagV-I||/||I|| = ", res);
+    }
+
+    // case 2: rank-2 link (sigma_min = 0 exactly)
+    sm = Zero();
+    sm()()(0,0) = ComplexD(1.0); sm()()(1,1) = ComplexD(1.0);
+    fillField(su, sm);
+    p.project(sv, su);
+    {
+      RealD res = unitarityResidual(sv);
+      if (res < stressTol) Grid_pass("sigma={1,1,0}    (rank-2)          : ||VdagV-I||/||I|| = ", res);
+      else                 Grid_error("sigma={1,1,0}    (rank-2)          : ||VdagV-I||/||I|| = ", res);
+    }
+
+    // case 3: rank-1 link (two zero singular values)
+    sm = Zero();
+    sm()()(0,0) = ComplexD(1.0);
+    fillField(su, sm);
+    p.project(sv, su);
+    {
+      RealD res = unitarityResidual(sv);
+      if (res < stressTol) Grid_pass("sigma={1,0,0}    (rank-1)          : ||VdagV-I||/||I|| = ", res);
+      else                 Grid_error("sigma={1,0,0}    (rank-1)          : ||VdagV-I||/||I|| = ", res);
+    }
+
+    // case 4: zero matrix (all singular values = 0)
+    sm = Zero();
+    fillField(su, sm);
+    p.project(sv, su);
+    {
+      RealD res = unitarityResidual(sv);
+      if (res < stressTol) Grid_pass("sigma={0,0,0}    (zero link)       : ||VdagV-I||/||I|| = ", res);
+      else                 Grid_error("sigma={0,0,0}    (zero link)       : ||VdagV-I||/||I|| = ", res);
+    }
+
+    // case 5: two degenerate near-zero singular values (sigma_1 = sigma_2 = 1e-10)
+    sm = Zero();
+    sm()()(0,0) = ComplexD(1.0); sm()()(1,1) = ComplexD(1e-10); sm()()(2,2) = ComplexD(1e-10);
+    fillField(su, sm);
+    p.project(sv, su);
+    {
+      RealD res = unitarityResidual(sv);
+      if (res < stressTol) Grid_pass("sigma={1,1e-10,1e-10} (degenerate) : ||VdagV-I||/||I|| = ", res);
+      else                 Grid_error("sigma={1,1e-10,1e-10} (degenerate) : ||VdagV-I||/||I|| = ", res);
+    }
+
+    // case 6: non-diagonal near-singular:  P * diag(1, 1, 1e-10) * P†
+    //         where P is the cyclic permutation matrix
+    {
+      ColourMatrixD P = Zero(), D = Zero();
+      P()()(0,1) = ComplexD(1.0); P()()(1,2) = ComplexD(1.0); P()()(2,0) = ComplexD(1.0);
+      D()()(0,0) = ComplexD(1.0); D()()(1,1) = ComplexD(1.0); D()()(2,2) = ComplexD(1e-10);
+      sm = P * D * adj(P);
+      fillField(su, sm);
+      p.project(sv, su);
+      RealD res = unitarityResidual(sv);
+      if (res < stressTol) Grid_pass("sigma={1,1,1e-10} (non-diag)      : ||VdagV-I||/||I|| = ", res);
+      else                 Grid_error("sigma={1,1,1e-10} (non-diag)      : ||VdagV-I||/||I|| = ", res);
+    }
+  };
+
+  singularLinkStressTest("Cayley-Hamilton + backup SVD", proj);
+
+  {
+    UnitaryProjectionContext ctxSVDProj(SingularValueDecompositionProjection, MIMDCollaborationDerivative);
+    UnitaryProjection<PeriodicGimplD> projSVD(ctxSVDProj);
+    singularLinkStressTest("pure SVD projection", projSVD);
   }
 
   /* derivative stress test */
@@ -314,6 +328,31 @@ int main (int argc, char ** argv) {
     // these should give similar results
     fdCheck("SVD-fallback  (sigma_min=1e-4, absTol=1.0)", U0svd, proj, 1e-3);
     fdCheck("SVD-fallback  (sigma_min=1e-4, absTol=1.0)", U0svd, projSVDTest, 1e-3);
+  }
+
+  // svdOnlyDerivative path: _eigs3SVD used exclusively for eigenvalue extraction inside
+  // _derivativeU3MILC, bypassing _eigs3 + backup entirely.  CH projection for forward pass.
+  {
+    UnitaryProjectionContext ctxSVDDeriv(CayleyHamiltonProjection, MIMDCollaborationDerivative);
+    ctxSVDDeriv.setSVDOnlyDerivative(true);
+    UnitaryProjection<PeriodicGimplD> projSVDDeriv(ctxSVDDeriv);
+
+    LatticeGaugeField U0(&Grid);
+    SU<Nc>::HotConfiguration(pRNG, U0);
+
+    fdCheck("svdOnlyDerivative (CH projection)", U0, projSVDDeriv, 1e-3);
+  }
+
+  // Pure SVD path: _projectU3SVD for projection, _eigs3SVD for derivative eigenvalues.
+  {
+    UnitaryProjectionContext ctxPureSVD(SingularValueDecompositionProjection, MIMDCollaborationDerivative);
+    ctxPureSVD.setSVDOnlyDerivative(true);
+    UnitaryProjection<PeriodicGimplD> projPureSVD(ctxPureSVD);
+
+    LatticeGaugeField U0(&Grid);
+    SU<Nc>::HotConfiguration(pRNG, U0);
+
+    fdCheck("SVD projection + svdOnlyDerivative", U0, projPureSVD, 1e-3);
   }
 
   /* finalize */

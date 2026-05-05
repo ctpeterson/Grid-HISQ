@@ -264,7 +264,8 @@ private:
       thread_for(n, grid->lSites(), {
         Coordinate lcoor;
         GridScalarMatrix gu;
-          
+
+        grid->LocalIndexToLocalCoor(n, lcoor);
         peekLocalSite(gu, u_v, lcoor);
         EigenSVD svd(toEigen(gu));
 
@@ -531,7 +532,7 @@ public:
     // Jacobi-based singular value decomposition: fallback for ill-conditioned links
     // conditions for falling back on SVD: https://doi.org/10.1103/PhysRevD.75.054502
     // Replaces eigenvalues of Vdag V wtih squared eigenvalues of SVD if conditions are met
-    if (ctx.backupSVD) {
+    if ((ctx.backupSVD) && (!ctx.svdOnlyDerivative)) {
       LatticeComplex oe0 = e0, oe1 = e1, oe2 = e2;
       RealD relativeSVDTolerance = ctx.relativeSVDTolerance;
       RealD absoluteSVDTolerance = ctx.absoluteSVDTolerance;
