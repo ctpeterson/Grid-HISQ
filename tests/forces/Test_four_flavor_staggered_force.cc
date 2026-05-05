@@ -30,9 +30,6 @@ Author: Curtis Taylor Peterson <curtistaylorpetersonwork@gmail.com>
 
 using namespace std;
 using namespace Grid;
- ;
-
- 
 
 int main (int argc, char ** argv)
 {
@@ -52,40 +49,50 @@ int main (int argc, char ** argv)
 
   std::vector<int> seeds({1,2,3,4});
 
-  GridSerialRNG          sRNG;
-  sRNG.SeedFixedIntegers(seeds);
-
   GridParallelRNG          pRNG(&Grid);
-  pRNG.SeedFixedIntegers(std::vector<int>({45,12,81,9}));
+  GridSerialRNG            sRNG;
+  std::vector<int> vrand(4);
+  std::srand(std::time(0));
+  std::generate(vrand.begin(), vrand.end(), std::rand);
+  std::cout << GridLogMessage << vrand << std::endl;
+  pRNG.SeedFixedIntegers(vrand);
+  sRNG.SeedFixedIntegers(vrand);
+  //pRNG.SeedFixedIntegers(std::vector<int>({45,12,81,9}));
 
   LatticeGaugeField U(&Grid);
 
-  SU<Nc>::HotConfiguration(pRNG,U);
-  
-  double beta = 1.0;
+  //SU<Nc>::HotConfiguration(pRNG,U);
+  SU<Nc>::ColdConfiguration(pRNG,U);
 
+  ////////////////////////////////////
+  // Set up fermion operator, solver, and four-flavour pseudofermion action
+  ////////////////////////////////////
   RealD mass=0.1;
   RealD c1=1.0;
   RealD u0=1.0;
-  NaiveStaggeredFermionD Ds(U,Grid,RBGrid,mass,c1,u0);
-  ConjugateGradient<FermionField> CG(1.0e-8, 2000);
-  FourFlavorStaggeredEvenEvenPseudoFermionAction<StaggeredImplD> Action(Ds, CG, CG);
+  NaiveStaggeredFermionD Ds(U, Grid, RBGrid, mass, c1, u0);
 
-  Action.refresh(U, sRNG, pRNG);
+  ConjugateGradient<FermionField> CG(1.0e-8, 10000);
+  FourFlavorStaggeredEvenEvenPseudoFermionAction<StaggeredImplD> PF(Ds, CG, CG);
 
-  ComplexD S    = Action.S(U);
+  PF.refresh(U, sRNG, pRNG);
+  RealD S = PF.S(U);
 
-  // get the deriv of phidag MdagM phi with respect to "U"
+  // get the deriv of the pseudofermion action with respect to U
   LatticeGaugeField UdSdU(&Grid);
+  LatticeGaugeField tmp(&Grid);
 
-  Action.deriv(U,UdSdU);
+  PF.deriv(U, UdSdU);
+
+  // Take the traceless antihermitian part
   UdSdU = Ta(UdSdU);
 
   ////////////////////////////////////
   // Modify the gauge field a little 
   ////////////////////////////////////
-  RealD dt = 0.002;
-
+  RealD dt = 0.0001;
+  RealD Hmom = 0.0;
+  RealD Hmomprime = 0.0;
   LatticeColourMatrix mommu(&Grid); 
   LatticeColourMatrix forcemu(&Grid); 
   LatticeGaugeField mom(&Grid); 
@@ -93,49 +100,103 @@ int main (int argc, char ** argv)
 
   for(int mu=0;mu<Nd;mu++){
 
-    SU<Nc>::GaussianFundamentalLieAlgebraMatrix(pRNG, mommu); // Traceless antihermitian momentum; gaussian in lie alg
+    // Traceless antihermitian momentum; gaussian in lie alg
+    SU<Nc>::GaussianFundamentalLieAlgebraMatrix(pRNG, mommu); 
+
+    Hmom -= real(sum(trace(mommu*mommu)));
 
     PokeIndex<LorentzIndex>(mom,mommu,mu);
 
-    // fourth order exponential approx
-    autoView(Uprime_v, Uprime, CpuWrite);
+    // sixth order exponential approx
     autoView( U_v , U, CpuRead);
     autoView( mom_v, mom, CpuRead);
-    thread_foreach(i,mom_v,{ // exp(pmu dt) * Umu
-      Uprime_v[i](mu) = U_v[i](mu) + mom_v[i](mu)*U_v[i](mu)*dt ;
+    autoView(Uprime_v, Uprime, CpuWrite);
+    thread_foreach( i,mom_v,{
+      Uprime_v[i](mu)  =	  U_v[i](mu);
+      Uprime_v[i](mu) += mom_v[i](mu)*U_v[i](mu)*dt ;
+      Uprime_v[i](mu) += mom_v[i](mu) *mom_v[i](mu) *U_v[i](mu)*(dt*dt/2.0);
+      Uprime_v[i](mu) += mom_v[i](mu) *mom_v[i](mu) *mom_v[i](mu) *U_v[i](mu)*(dt*dt*dt/6.0);
+      Uprime_v[i](mu) += mom_v[i](mu) *mom_v[i](mu) *mom_v[i](mu) *mom_v[i](mu) *U_v[i](mu)*(dt*dt*dt*dt/24.0);
+      Uprime_v[i](mu) += mom_v[i](mu) *mom_v[i](mu) *mom_v[i](mu) *mom_v[i](mu) *mom_v[i](mu) *U_v[i](mu)*(dt*dt*dt*dt*dt/120.0);
+      Uprime_v[i](mu) += mom_v[i](mu) *mom_v[i](mu) *mom_v[i](mu) *mom_v[i](mu) *mom_v[i](mu) *mom_v[i](mu) *U_v[i](mu)*(dt*dt*dt*dt*dt*dt/720.0);
     });
   }
 
-  ComplexD Sprime    = Action.S(Uprime);
+  std::cout << GridLogMessage <<"Initial mom hamiltonian is "<< Hmom <<std::endl;
+
+  RealD Sprime = PF.S(Uprime);
 
   //////////////////////////////////////////////
   // Use derivative to estimate dS
   //////////////////////////////////////////////
 
+  for(int mu=0;mu<Nd;mu++){
+    std::cout << "" <<std::endl;
+    mommu   = PeekIndex<LorentzIndex>(mom,mu);
+    std::cout << GridLogMessage<< " Mommu  " << norm2(mommu)<<std::endl;
+    mommu   = mommu+adj(mommu);
+    std::cout << GridLogMessage<< " Mommu + Mommudag " << norm2(mommu)<<std::endl;
+    mommu   = PeekIndex<LorentzIndex>(UdSdU,mu);
+    std::cout << GridLogMessage<< " dsdumu  " << norm2(mommu)<<std::endl;
+    mommu   = mommu+adj(mommu);
+    std::cout << GridLogMessage<< " dsdumu + dag  " << norm2(mommu)<<std::endl;
+  }
+
   LatticeComplex dS(&Grid); dS = Zero();
+  LatticeComplex dSmom(&Grid); dSmom = Zero();
+  LatticeComplex dSmom2(&Grid); dSmom2 = Zero();
 
   for(int mu=0;mu<Nd;mu++){
-
-    auto UdSdUmu = PeekIndex<LorentzIndex>(UdSdU,mu);
-         mommu   = PeekIndex<LorentzIndex>(mom,mu);
-
-    // Update gauge action density
-    // U = exp(p dt) U
-    // dU/dt = p U
-    // so dSdt = trace( dUdt dSdU) = trace( p UdSdUmu ) 
-
-    dS = dS - trace(mommu*UdSdUmu)*dt*2.0;
-
+    mommu   = PeekIndex<LorentzIndex>(UdSdU,mu);
+    mommu=Ta(mommu)*2.0;
+    PokeIndex<LorentzIndex>(UdSdU,mommu,mu);
   }
-  ComplexD dSpred    = sum(dS);
 
-  std::cout << std::setprecision(15)<<std::endl;
+  for(int mu=0;mu<Nd;mu++){
+    mommu   = PeekIndex<LorentzIndex>(mom,mu);
+    std::cout << GridLogMessage<< " Mommu  " << norm2(mommu)<<std::endl;
+    mommu   = mommu+adj(mommu);
+    std::cout << GridLogMessage<< " Mommu + Mommudag " << norm2(mommu)<<std::endl;
+    mommu   = PeekIndex<LorentzIndex>(UdSdU,mu);
+    std::cout << GridLogMessage<< " dsdumu  " << norm2(mommu)<<std::endl;
+    mommu   = mommu+adj(mommu);
+    std::cout << GridLogMessage<< " dsdumu + dag  " << norm2(mommu)<<std::endl;
+  }
+
+  for(int mu=0;mu<Nd;mu++){
+    forcemu = PeekIndex<LorentzIndex>(UdSdU,mu);
+    mommu   = PeekIndex<LorentzIndex>(mom,mu);
+
+    // Update PF action density
+    dS = dS+trace(mommu*forcemu)*dt;
+
+    dSmom  = dSmom  - trace(mommu*forcemu) * dt;
+    dSmom2 = dSmom2 - trace(forcemu*forcemu) *(0.25* dt*dt);
+
+    // Update mom action density
+    mommu = mommu + forcemu*(dt * 0.5);
+
+    Hmomprime -= real(sum(trace(mommu*mommu)));
+  }
+
+  ComplexD dSpred    = sum(dS);
+  ComplexD dSm       = sum(dSmom);
+  ComplexD dSm2      = sum(dSmom2);
+
+  std::cout << GridLogMessage <<"Initial mom hamiltonian is "<< Hmom <<std::endl;
+  std::cout << GridLogMessage <<"Final   mom hamiltonian is "<< Hmomprime <<std::endl;
+  std::cout << GridLogMessage <<"Delta   mom hamiltonian is "<< Hmomprime-Hmom <<std::endl;
+
   std::cout << GridLogMessage << " S      "<<S<<std::endl;
   std::cout << GridLogMessage << " Sprime "<<Sprime<<std::endl;
   std::cout << GridLogMessage << "dS      "<<Sprime-S<<std::endl;
-  std::cout << GridLogMessage << "pred dS "<< dSpred <<std::endl;
+  std::cout << GridLogMessage << "predict dS    "<< dSpred <<std::endl;
+  std::cout << GridLogMessage <<"dSm "<< dSm<<std::endl;
+  std::cout << GridLogMessage <<"dSm2"<< dSm2<<std::endl;
 
-  GRID_ASSERT( fabs(real(Sprime-S-dSpred)) < 1.0e-2 ) ;
+  std::cout << GridLogMessage << "Total dS    "<< Hmomprime - Hmom + Sprime - S <<std::endl;
+
+  GRID_ASSERT( fabs(Sprime-S-real(dSpred)) < 1.0e-2 ) ;
 
   std::cout<< GridLogMessage << "Done" <<std::endl;
   Grid_finalize();
