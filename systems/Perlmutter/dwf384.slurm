@@ -1,12 +1,13 @@
 #!/bin/bash
-#SBATCH -A m5294_g
+##SBATCH -A m5294_g
+#SBATCH -A mp13_g
 #m3886_g
 #SBATCH -C gpu
-#SBATCH -q debug
-#SBATCH -t 0:20:00
+#SBATCH -q premium
+#SBATCH -t 00:20
 #SBATCH -c 32
-#SBATCH -N 1
-#SBATCH -n 4
+#SBATCH -N 384
+#SBATCH -n 1536
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-task=1
 #SBATCH --exclusive
@@ -32,9 +33,7 @@ EOF
 
 chmod +x ./select_gpu
 
-OPT="--comms-sequential --shm-mpi 0"
-VOL=64.64.32.32
-srun ./select_gpu ./benchmarks/Benchmark_dwf_fp32 --mpi 2.2.1.1 --grid $VOL --device-mem 16000 --accelerator-threads 8 --shm 2048 $OPT
+export VOL=128.128.128.288
 OPT="--comms-overlap --shm-mpi 0"
-srun ./select_gpu ./benchmarks/Benchmark_dwf_fp32 --mpi 2.2.1.1 --grid $VOL --device-mem 16000 --accelerator-threads 8 --shm 2048 $OPT
+srun ./select_gpu ./benchmarks/Benchmark_dwf_fp32 --mpi 4.8.4.12 --grid $VOL --device-mem 16000 --accelerator-threads 8 --shm 2048 $OPT
 

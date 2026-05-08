@@ -3,10 +3,10 @@
 #m3886_g
 #SBATCH -C gpu
 #SBATCH -q debug
-#SBATCH -t 0:20:00
+#SBATCH -t 0:30:00
 #SBATCH -c 32
-#SBATCH -N 1
-#SBATCH -n 4
+#SBATCH -N 4
+#SBATCH -n 16
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-task=1
 #SBATCH --exclusive
@@ -34,7 +34,6 @@ chmod +x ./select_gpu
 
 OPT="--comms-sequential --shm-mpi 0"
 VOL=64.64.32.32
-srun ./select_gpu ./benchmarks/Benchmark_dwf_fp32 --mpi 2.2.1.1 --grid $VOL --device-mem 16000 --accelerator-threads 8 --shm 2048 $OPT
-OPT="--comms-overlap --shm-mpi 0"
-srun ./select_gpu ./benchmarks/Benchmark_dwf_fp32 --mpi 2.2.1.1 --grid $VOL --device-mem 16000 --accelerator-threads 8 --shm 2048 $OPT
+srun ./select_gpu ./benchmarks/Benchmark_usqcd --mpi 2.2.2.2 --grid $VOL --device-mem 16000 --accelerator-threads 8 --shm 2048 $OPT > usqcd.log
+
 

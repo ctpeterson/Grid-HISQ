@@ -1,12 +1,13 @@
 #!/bin/bash
-#SBATCH -A m5294_g
+##SBATCH -A m5294_g
+#SBATCH -A mp13_g
 #m3886_g
 #SBATCH -C gpu
-#SBATCH -q debug
-#SBATCH -t 0:20:00
+#SBATCH -q premium
+#SBATCH -t 00:10
 #SBATCH -c 32
-#SBATCH -N 1
-#SBATCH -n 4
+#SBATCH -N 32
+#SBATCH -n 128
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-task=1
 #SBATCH --exclusive
@@ -32,9 +33,12 @@ EOF
 
 chmod +x ./select_gpu
 
-OPT="--comms-sequential --shm-mpi 0"
-VOL=64.64.32.32
-srun ./select_gpu ./benchmarks/Benchmark_dwf_fp32 --mpi 2.2.1.1 --grid $VOL --device-mem 16000 --accelerator-threads 8 --shm 2048 $OPT
 OPT="--comms-overlap --shm-mpi 0"
-srun ./select_gpu ./benchmarks/Benchmark_dwf_fp32 --mpi 2.2.1.1 --grid $VOL --device-mem 16000 --accelerator-threads 8 --shm 2048 $OPT
+#
+# Local volume WAS 32.16.32.24
+#
+# 384 nodes
+#srun ./select_gpu ./Test_dwf_mixedcg_prec --seconds 300 --grid 128.128.128.288 --mpi 4.8.4.12 --device-mem 16000 --accelerator-threads 8 --shm 2048 $OPT > job.log
+# 32 nodes, same volume per node
+srun ./select_gpu ./Test_dwf_mixedcg_prec --seconds 300 --grid 64.32.64.96 --mpi 2.2.2.4 --device-mem 16000 --accelerator-threads 8 --shm 2048 $OPT > job.log
 
