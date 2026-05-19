@@ -591,6 +591,8 @@ public:
     GaugeField& WWW,
     const GaugeField& W,
     const HISFContext ctx
+  ){ smearII(X, WWW, W, ctx); }
+/*
   ) { 
 #if defined(GRID_SYCL) || defined(GRID_CUDA) || defined(GRID_HIP)
     smearI(X, WWW, W, ctx);
@@ -598,6 +600,7 @@ public:
     smearII(X, WWW, W, ctx);
 #endif
   }
+*/
 
   void smear(GaugeField& X, GaugeField& WWW, const GaugeField& W) {
     HISFContext asqtadCtx(ASQL1, ASQL3, ASQL5, ASQL7, LEPAGE, NAIK); 
