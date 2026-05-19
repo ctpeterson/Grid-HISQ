@@ -591,7 +591,7 @@ public:
     GaugeField& WWW,
     const GaugeField& W,
     const HISFContext ctx
-  ){ smearII(X, WWW, W, ctx); }
+  ) { smearII(X, WWW, W, ctx); }
 /*
   ) { 
 #if defined(GRID_SYCL) || defined(GRID_CUDA) || defined(GRID_HIP)
