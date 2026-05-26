@@ -565,7 +565,6 @@ public:
 
         // Eqn (C22) of https://doi.org/10.1103/PhysRevD.75.054502
         if (detDiffTooLarge or e0TooSmall or e1TooSmall or e2TooSmall) {
-          std::cout << "regulating" << std::endl;
           GridScalarMatrix gu;
           EigenScalarMatrix eu, ev = EigenScalarMatrix::Zero();
           
