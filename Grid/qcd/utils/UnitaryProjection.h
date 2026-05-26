@@ -93,7 +93,7 @@ struct UnitaryProjectionContext {
   ): projectionMethod(projectionMethod), derivativeMethod(derivativeMethod) { }
   
   UnitaryProjectionContext(
-    UnitaryProjectionDerivativeMethod derivativeMethod = JinOsbornDerivative,
+    UnitaryProjectionDerivativeMethod derivativeMethod,
     UnitaryProjectionMethod projectionMethod = CayleyHamiltonProjection
   ): projectionMethod(projectionMethod), derivativeMethod(derivativeMethod) { }
   
@@ -236,15 +236,6 @@ private:
     LatticeReal yr = toReal(y);
     xr = abs(xr);
     return where(xr >= yr, x, y); 
-  }
-
-  void _bound(LatticeComplex& x) {
-    LatticeReal xr = toReal(x);
-    x = where(
-      xr < ctx.derivativeEigenvalueCutoff, 
-      x + ctx.derivativeEigenvalueCutoff, 
-      x
-    );
   }
 
   void _eigs3SVD(
@@ -513,10 +504,14 @@ public:
     GaugeLinkField d0(grid), d1(grid), d2(grid);
     LatticeComplex e0(grid), e1(grid), e2(grid);
     LatticeComplex f0(grid), f1(grid), f2(grid);
-    LatticeComplex unit(grid), detA(grid), detB(grid), relDetDiff(grid);
+    LatticeComplex unit(grid), zero(grid);
+    LatticeComplex detA(grid), detB(grid), relDetDiff(grid);
+    LatticeReal eps(grid), minei(grid);
+
+    // numerical constants
+    unit = 1.0, unity = 1.0, zero = 0.0, eps = ctx.derivativeEigenvalueCutoff;
 
     // eigenvalues of q = u†u
-    unit = 1.0, unity = 1.0;
     q = adj(u)*u; 
     q2 = q*q;
     if (ctx.svdOnlyDerivative) _eigs3SVD(e0, e1, e2, u); 
@@ -570,6 +565,7 @@ public:
 
         // Eqn (C22) of https://doi.org/10.1103/PhysRevD.75.054502
         if (detDiffTooLarge or e0TooSmall or e1TooSmall or e2TooSmall) {
+          std::cout << "regulating" << std::endl;
           GridScalarMatrix gu;
           EigenScalarMatrix eu, ev = EigenScalarMatrix::Zero();
           
@@ -589,8 +585,11 @@ public:
       });
     }
 
-    // Eqn (C22) of https://doi.org/10.1103/PhysRevD.75.054502; "force filter"
-    _bound(e0), _bound(e1), _bound(e2);
+    // force filter [Eqn. C23 of PRD(75)054502]
+    minei = toReal(_absmin(e0, _absmin(e1, e2)));
+    e0 = where(minei < eps, e0 + ctx.derivativeEigenvalueCutoff, e0);
+    e1 = where(minei < eps, e1 + ctx.derivativeEigenvalueCutoff, e1);
+    e2 = where(minei < eps, e2 + ctx.derivativeEigenvalueCutoff, e2);
 
     // Cayley-Hamilton: "u, v, w" coefficients [Eqn. C6 of PRD(75)054502]
     f0 = sqrt(e0), f1 = sqrt(e1), f2 = sqrt(e2);
