@@ -56,8 +56,23 @@ template<class Impl> class StaggeredKernels : public FermionOperator<Impl> , pub
 		 DoubledGaugeField &U,
 		 const FermionField &in, FermionField &out, int dag, int interior,int exterior);
   
-  void DhopDirKernel(StencilImpl &st, DoubledGaugeFieldView &U, DoubledGaugeFieldView &UUU, SiteSpinor * buf,
-		     int sF, int sU, const FermionFieldView &in, FermionFieldView &out, int dir,int disp);
+  void DhopDir(StencilImpl &st, DoubledGaugeField &U, DoubledGaugeField &UUU,
+              const FermionField &in, FermionField &out, int dir, int disp, int naik);
+  
+  template <int Naik> static accelerator_inline
+  void DhopDirKernelXp(StencilView& st, DoubledGaugeFieldView& U, DoubledGaugeFieldView& UUU, 
+                      SiteSpinor* buf, const FermionFieldView& in, FermionFieldView& out, int sF, int sU);
+  template <int Naik> static accelerator_inline
+  void DhopDirKernelYp(StencilView& st, DoubledGaugeFieldView& U, DoubledGaugeFieldView& UUU, 
+                      SiteSpinor* buf, const FermionFieldView& in, FermionFieldView& out, int sF, int sU);
+  template <int Naik> static accelerator_inline
+  void DhopDirKernelZp(StencilView& st, DoubledGaugeFieldView& U, DoubledGaugeFieldView& UUU, 
+                      SiteSpinor* buf, const FermionFieldView& in, FermionFieldView& out, int sF, int sU);
+  template <int Naik> static accelerator_inline
+  void DhopDirKernelTp(StencilView& st, DoubledGaugeFieldView& U, DoubledGaugeFieldView& UUU, 
+                      SiteSpinor* buf, const FermionFieldView& in, FermionFieldView& out, int sF, int sU);
+  
+
  protected:    
 
    ///////////////////////////////////////////////////////////////////////////////////////

@@ -205,10 +205,25 @@ void NaiveStaggeredFermion<Impl>::DerivInternal(
    */
   GRID_ASSERT((dag == DaggerNo) || (dag == DaggerYes));
 
+  Compressor compressor;
+  FermionField Btilde(B.Grid());
+  FermionField Atilde = A;
+
+  st.HaloExchange(B, compressor);
+
+  for (int mu = 0; mu < Nd; ++mu) {
+    Kernels::DhopDir(st, U, U, B, Btilde, mu, 1, 0);
+    pokeLorentz(mat, outerProduct(Btilde, Atilde), mu);
+  }
+
+  if (dag) { mat = -mat; }
+
+  /*
   for (int mu = 0; mu < Nd; ++mu) 
   { pokeLorentz(mat, outerProduct(Impl::CovShiftForward(peekLorentz(U, mu), mu, B), A), mu); }
 
   if (dag) { mat = -mat; }
+  */
 }
 
 template <class Impl>

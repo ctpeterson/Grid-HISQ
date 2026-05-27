@@ -7,6 +7,7 @@ Source file: ./lib/qcd/action/fermion/WilsonKernels.cc
 Copyright (C) 2015
 
 Author: Azusa Yamaguchi, Peter Boyle
+Author: Curtis Taylor Peterson <curtistaylorpetersonwork@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -226,15 +227,112 @@ void StaggeredKernels<Impl>::DhopSiteGenericExt(StencilView &st,
 ////////////////////////////////////////////////////////////////////////////////////
 // Driving / wrapping routine to select right kernel
 ////////////////////////////////////////////////////////////////////////////////////
+/*
 template <class Impl> 
-void StaggeredKernels<Impl>::DhopDirKernel(StencilImpl &st, DoubledGaugeFieldView &U, DoubledGaugeFieldView &UUU, SiteSpinor * buf,
-					   int sF, int sU, const FermionFieldView &in, FermionFieldView &out, int dir,int disp)
-{
+void StaggeredKernels<Impl>::DhopDirKernel(
+  StencilImpl& st, 
+  DoubledGaugeFieldView& U, 
+  DoubledGaugeFieldView& UUU, 
+  SiteSpinor* buf,
+	int sF, 
+  int sU, 
+  const FermionFieldView& in, 
+  FermionFieldView& out, 
+  int dir,
+  int disp
+) {
   // Disp should be either +1,-1,+3,-3
   // What about "dag" ?
   // Because we work out pU . dS/dU 
   // U
   GRID_ASSERT(0);
+}
+*/
+
+#define DhopDirMacro(Dir)                                              \
+  template <class Impl>                                                \
+  template <int Naik> accelerator_inline                               \
+  void StaggeredKernels<Impl>::DhopDirKernel##Dir(                     \
+    StencilView& st,                                                   \
+    DoubledGaugeFieldView& U,                                          \
+    DoubledGaugeFieldView& UUU,                                        \
+    SiteSpinor* buf,                                                   \
+    const FermionFieldView& in,                                        \
+    FermionFieldView& out,                                             \
+    int sF,                                                            \
+    int sU                                                             \
+  ) {                                                                  \
+    typedef decltype(coalescedRead(in[0])) calcSpinor;                 \
+    calcSpinor chi;                                                    \
+    calcSpinor Uchi;                                                   \
+    StencilEntry* SE;                                                  \
+    int ptype;                                                         \
+    int skew = Naik ? 8 : 0;                                           \
+    const int Nsimd = SiteHalfSpinor::Nsimd();                         \
+    const int lane = acceleratorSIMTlane(Nsimd);                       \
+    if (Naik) { GENERIC_STENCIL_LEG(UUU, Dir, skew, Impl::multLink); } \
+    else { GENERIC_STENCIL_LEG(U, Dir, skew, Impl::multLink); }        \
+    coalescedWrite(out[sF], Uchi, lane);                               \
+  }
+
+DhopDirMacro(Xp);
+DhopDirMacro(Yp);
+DhopDirMacro(Zp);
+DhopDirMacro(Tp);
+
+template <class Impl>
+void StaggeredKernels<Impl>::DhopDir(
+  StencilImpl& st, 
+  DoubledGaugeField& U, 
+  DoubledGaugeField& UUU,
+  const FermionField& in, 
+  FermionField& out, 
+  int dir,
+  int disp, // currently not used
+  int naik
+) {
+  GridBase* FermionGrid = in.Grid();
+  GridBase* GaugeGrid = U.Grid();
+
+  int Ls = 1;
+  int Nsite = GaugeGrid->oSites();
+
+  SiteSpinor* buf = st.CommBuf();
+
+  autoView(stv, st, AcceleratorRead);
+  autoView(Uv, U, AcceleratorRead);
+  autoView(UUUv, UUU, AcceleratorRead);
+  autoView(inv, in, AcceleratorRead);
+  autoView(outv, out, AcceleratorWrite);
+
+  if (FermionGrid->Nd() == GaugeGrid->Nd() + 1) { Ls = FermionGrid->_rdimensions[0]; }
+
+#define LoopBody(Dir)                                                 \
+  case Dir:                                                           \
+    if (naik) {                                                       \
+      accelerator_for(ss, Nsite*Ls, Simd::Nsimd(), {                  \
+        int sF = ss;                                                  \
+        int sU = ss / Ls;                                             \
+        DhopDirKernel##Dir<1>(stv, Uv, UUUv, buf, inv, outv, sF, sU); \
+      });                                                             \
+    } else {                                                          \
+      accelerator_for(ss, Nsite*Ls, Simd::Nsimd(), {                  \
+        int sF = ss;                                                  \
+        int sU = ss / Ls;                                             \
+        DhopDirKernel##Dir<0>(stv, Uv, UUUv, buf, inv, outv, sF, sU); \
+      });                                                             \
+    }                                                                 \
+    break;
+
+  switch (dir) {
+    LoopBody(Xp);
+    LoopBody(Yp);
+    LoopBody(Zp);
+    LoopBody(Tp);
+    default: GRID_ASSERT(0 && "Invalid direction in DhopDir"); break;
+  }
+
+#undef LoopBody
 }
 
 #define KERNEL_CALLNB(A,improved)					\
