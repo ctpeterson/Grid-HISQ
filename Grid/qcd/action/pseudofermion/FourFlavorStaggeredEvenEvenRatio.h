@@ -50,14 +50,16 @@ private:
   FermionOperator<Impl>& DenOp;
   OperatorFunction<FermionField>& DerivativeSolver;
   OperatorFunction<FermionField>& ActionSolver;
+
+public:
   FermionField Phi;
 
 public:
   FourFlavorStaggeredEvenEvenRatioPseudoFermionAction(
     FermionOperator<Impl>& _NumOp, 
-	FermionOperator<Impl>& _DenOp, 
-	OperatorFunction<FermionField>& DS,
-	OperatorFunction<FermionField>& AS
+	  FermionOperator<Impl>& _DenOp, 
+	  OperatorFunction<FermionField>& DS,
+	  OperatorFunction<FermionField>& AS
   ):NumOp(_NumOp), 
     DenOp(_DenOp), 
     DerivativeSolver(DS), 
@@ -133,12 +135,14 @@ private:
     NumOp.Mdag(phi, Y);
     DerivativeSolver(MdagMOp, Y, X);    
     DenOp.M(X, Y); 
-    NumOp.MDeriv(force, X, phi, DaggerYes); dSdU = force;
-    NumOp.MDeriv(force, phi, X, DaggerNo); dSdU = dSdU + force;
-    DenOp.MDeriv(force, Y,X, DaggerNo); dSdU = dSdU - force;
-    DenOp.MDeriv(force, X, Y, DaggerYes); dSdU = dSdU - force;
-
-    dSdU *= -1.0;
+    NumOp.MDeriv(force, X, phi, DaggerYes); 
+    dSdU = force;
+    NumOp.MDeriv(force, phi, X, DaggerNo); 
+    dSdU += force;
+    DenOp.MDeriv(force, Y, X, DaggerNo); 
+    dSdU -= force;
+    DenOp.MDeriv(force, X, Y, DaggerYes); 
+    dSdU -= force;
   }
 
 public:
