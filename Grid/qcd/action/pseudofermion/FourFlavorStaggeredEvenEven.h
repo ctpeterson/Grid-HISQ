@@ -2,7 +2,7 @@
 
 Grid physics library, www.github.com/paboyle/Grid
 
-Source file: ./lib/qcd/action/pseudofermion/StaggeredEE.h
+Source file: ./lib/qcd/action/pseudofermion/FourFlavorStaggeredEvenEven.h
 
 Copyright (C) 2015
 
@@ -27,7 +27,7 @@ directory
 *************************************************************************************/
 /*  END LEGAL */
 /**
-  @file StaggeredEE.h
+  @file FourFlavorStaggeredEvenEven.h
   @author Curtis Taylor Peterson
 */
 
@@ -39,8 +39,6 @@ directory
 
 NAMESPACE_BEGIN(Grid);
 
-enum Solver {ActionSolve,DerivativeSolve};
-
 template <class Impl>
 class FourFlavorStaggeredEvenEvenPseudoFermionAction: public Action<typename Impl::GaugeField> 
 {
@@ -48,37 +46,36 @@ public: INHERIT_IMPL_TYPES(Impl);
 
 private:
   RealD _scale;
-  FermionOperator<Impl> &FermOp;
-  OperatorFunction<FermionField> &DerivativeSolver;
-  OperatorFunction<FermionField> &ActionSolver;
-
-public:
-  RealD mass;
+  FermionOperator<Impl>& FermOp;
+  OperatorFunction<FermionField>& DerivativeSolver;
+  OperatorFunction<FermionField>& ActionSolver;
   FermionField Phi;
 
 public:
   FourFlavorStaggeredEvenEvenPseudoFermionAction(
-    FermionOperator<Impl> &Op,
-    OperatorFunction<FermionField> &DS,
-    OperatorFunction<FermionField> &AS
+    FermionOperator<Impl>& Op,
+    OperatorFunction<FermionField>& DS,
+    OperatorFunction<FermionField>& AS
   ):DerivativeSolver(DS),
     ActionSolver(AS),
     FermOp(Op),
     Phi(Op.FermionRedBlackGrid()) {
-    mass = Op.Mass(), 
-    _scale = std::sqrt(0.5), 
-    Phi.Checkerboard() = Even, 
+    _scale = std::sqrt(0.5); 
+    Phi.Checkerboard() = Even; 
     Phi = Zero();
   }
 
   virtual std::string action_name() 
   { return "FourFlavorStaggeredEvenEvenPseudoFermionAction"; }
 
-  virtual std::string LogParameters()
-  { return "type: staggered \"half\" pseudofermion mass: " + std::to_string(mass); }
+  virtual std::string LogParameters() { 
+    std::stringstream sstream;
+    sstream << GridLogMessage << "["<<action_name()<<"] has no parameters" << std::endl;
+    return sstream.str();
+  }
 
 private:
-  void _refresh(GridParallelRNG &pRNG) {
+  void _refresh(GridParallelRNG& pRNG) {
     FermionField eta(FermOp.FermionGrid()), phi(FermOp.FermionGrid());
     
     gaussian(pRNG, eta); 
@@ -104,7 +101,7 @@ private:
     return norm2(eta); 
   }
 
-  void _deriv(GaugeField &dSdU) {
+  void _deriv(GaugeField& dSdU) {
     SchurStaggeredOperator<FermionOperator<Impl>, FermionField> MdagM(FermOp);
     GaugeField tmp(dSdU.Grid());
     FermionField X(FermOp.FermionGrid()), Y(FermOp.FermionGrid());
@@ -126,25 +123,25 @@ private:
   }
 
 public:
-  virtual void refresh(const GaugeField &U, GridSerialRNG &sRNG, GridParallelRNG &pRNG)
+  virtual void refresh(const GaugeField& U, GridSerialRNG& sRNG, GridParallelRNG& pRNG)
   { FermOp.ImportGauge(U); _refresh(pRNG); }
 
-  virtual RealD S(const GaugeField &U) { FermOp.ImportGauge(U); return _action(); }
+  virtual RealD S(const GaugeField& U) { FermOp.ImportGauge(U); return _action(); }
 
-  virtual void deriv(const GaugeField &U, GaugeField &dSdU) 
+  virtual void deriv(const GaugeField& U, GaugeField& dSdU) 
   { FermOp.ImportGauge(U); _deriv(dSdU); }
 
   virtual void refresh(
-    ConfigurationBase<GaugeField> &U, 
-    GridSerialRNG &sRNG, 
-    GridParallelRNG &pRNG
+    ConfigurationBase<GaugeField>& U, 
+    GridSerialRNG& sRNG, 
+    GridParallelRNG& pRNG
   ) { refresh(U.get_SmearedU(), sRNG, pRNG); }
 
-  virtual RealD S(ConfigurationBase<GaugeField> &U) { return S(U.get_SmearedU()); }
+  virtual RealD S(ConfigurationBase<GaugeField>& U) { return S(U.get_SmearedU()); }
 
-  virtual RealD Sinitial(ConfigurationBase<GaugeField> &U) { return _action(); }
+  virtual RealD Sinitial(ConfigurationBase<GaugeField>& U) { return _action(); }
 
-  virtual void deriv(ConfigurationBase<GaugeField> &U, GaugeField &dSdU)
+  virtual void deriv(ConfigurationBase<GaugeField>& U, GaugeField& dSdU)
   { deriv(U.get_SmearedU(), dSdU); if (this->is_smeared) { U.smeared_force(dSdU); } }
 };
 

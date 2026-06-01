@@ -45,5 +45,6 @@ directory
 #include <Grid/qcd/action/pseudofermion/OneFlavourEvenOddRationalRatio.h>
 #include <Grid/qcd/action/pseudofermion/ExactOneFlavourRatio.h>
 #include <Grid/qcd/action/pseudofermion/FourFlavorStaggeredEvenEven.h>
+#include <Grid/qcd/action/pseudofermion/FourFlavorStaggeredEvenEvenRatio.h>
 
 #endif
