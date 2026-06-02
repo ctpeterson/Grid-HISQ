@@ -127,6 +127,15 @@ public:
   DoubledGaugeField &GetU(void)   { return Umu ; } ;
   void CopyGaugeCheckerboards(void);
 
+  ////////////////////////////////////////////
+  // Domain decomposition support
+  ////////////////////////////////////////////
+  virtual void DirichletBlock(const Coordinate& block) {
+    Stencil.DirichletBlock(block);
+    StencilEven.DirichletBlock(block);
+    StencilOdd.DirichletBlock(block);
+  }
+
   ///////////////////////////////////////////////////////////////
   // Data members require to support the functionality
   ///////////////////////////////////////////////////////////////
