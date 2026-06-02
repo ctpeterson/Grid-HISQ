@@ -49,6 +49,8 @@ private:
   FermionOperator<Impl>& FermOp;
   OperatorFunction<FermionField>& DerivativeSolver;
   OperatorFunction<FermionField>& ActionSolver;
+
+public:
   FermionField Phi;
 
 public:
@@ -102,10 +104,10 @@ private:
   }
 
   void _deriv(GaugeField& dSdU) {
-    SchurStaggeredOperator<FermionOperator<Impl>, FermionField> MdagM(FermOp);
     GaugeField tmp(dSdU.Grid());
     FermionField X(FermOp.FermionGrid()), Y(FermOp.FermionGrid());
     FermionField PsiE(FermOp.FermionRedBlackGrid());
+    SchurStaggeredOperator<FermionOperator<Impl>, FermionField> MdagM(FermOp);
 
     PsiE.Checkerboard() = Even;
     PsiE = Zero();

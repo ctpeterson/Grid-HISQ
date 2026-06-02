@@ -85,7 +85,6 @@ private:
     FermionField X(NumOp.FermionGrid());
     FermionField Y(NumOp.FermionGrid());
     FermionField phi(NumOp.FermionGrid());
-
     MdagMLinearOperator<FermionOperator<Impl>, FermionField> MdagMOp(NumOp);
 
     X = Zero();
