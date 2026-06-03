@@ -198,10 +198,6 @@ void NaiveStaggeredFermion<Impl>::DerivInternal(
   /**
    * @brief naive staggered fermion derivative
    * @author Curtis Taylor Peterson
-   * @details
-   * Computes staggered fermion derivative from simple covariant shifts. Important
-   * to do is to use the stencil & optimized kernels, but this suffices for what is
-   * ultimately a cheap portion on the derivative to compute.
    */
   GRID_ASSERT((dag == DaggerNo) || (dag == DaggerYes));
 
@@ -217,13 +213,6 @@ void NaiveStaggeredFermion<Impl>::DerivInternal(
   }
 
   if (dag) { mat = -mat; }
-
-  /*
-  for (int mu = 0; mu < Nd; ++mu) 
-  { pokeLorentz(mat, outerProduct(Impl::CovShiftForward(peekLorentz(U, mu), mu, B), A), mu); }
-
-  if (dag) { mat = -mat; }
-  */
 }
 
 template <class Impl>

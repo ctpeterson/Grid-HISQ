@@ -43,10 +43,13 @@ class ConfigurationBase
 public:
   ConfigurationBase() {}
   virtual ~ConfigurationBase() {}
-  virtual void set_Field(Field& U) =0;
+  virtual bool hasLongLink() const { return false; }
+  virtual void set_Field(Field& U) = 0;
   virtual void smeared_force(Field&) = 0;
-  virtual Field& get_SmearedU() =0;
-  virtual Field &get_U(bool smeared = false) = 0;
+  virtual void smeared_multilink_force(Field& dSdU, const Field& dSdX, const Field& dSdY) { smeared_force(dSdU); }
+  virtual Field& get_SmearedU() = 0;
+  virtual Field& get_SmearedLongU() { return get_SmearedU(); }
+  virtual Field& get_U(bool smeared = false) = 0;
 };
 
 template <class GaugeField >

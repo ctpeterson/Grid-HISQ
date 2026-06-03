@@ -325,7 +325,7 @@ private:
      * (3b) eta_1 = (-1)^{x0}
      * (3c) eta_2 = (-1)^{x0+x1}
      * (3d) eta_3 = (-1)^{x0+x1+x2}
-     * Dirichlet boundary conditions are imposed by "rephasing" the links 
+     * Boundary conditions are imposed by "rephasing" the links 
      * on the boundary, with "1" for periodic and "-1" for anti-periodic.
      */
     GridBase *grid = phases[0].Grid();

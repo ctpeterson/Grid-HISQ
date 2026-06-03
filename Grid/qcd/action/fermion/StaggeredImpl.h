@@ -102,21 +102,56 @@ public:
     {
       PokeIndex<LorentzIndex>(U_ds, U, mu);
     }
-  inline void DoubleStore(GridBase *GaugeGrid,
-			  DoubledGaugeField &UUUds, // for Naik term
-			  DoubledGaugeField &Uds,
-			  const GaugeField &Uthin,
-			  const GaugeField &Ufat) {
+  inline void DoubleStore(
+    GridBase *GaugeGrid,
+		DoubledGaugeField &UUUds, // for Naik term
+		DoubledGaugeField &Uds,
+		const GaugeField &Uthin,
+		const GaugeField &Ufat
+  ) {
+    /**
+     * @brief Staggered double store
+     * @author Curtis Taylor Peterson, Peter Boyle
+     * @details
+     * This code follows the "MILC convention", which treats the fourth 
+     * direction as the "time" coordinate:
+     * (2a) eta_0 = (-1)^{x3}       <---| 
+     * (2b) eta_1 = (-1)^{x3+x0}        | convention in
+     * (2c) eta_2 = (-1)^{x3+x0+x1}     | this code
+     * (2d) eta_3 = 1               <---|
+     * Though awkard, this convention follows that of most texts on
+     * relativity. This is opposed to the convention that one often finds in 
+     * lattice gauge theory textbooks, where the "time" direction is x0:
+     * (3a) eta_0 = 1
+     * (3b) eta_1 = (-1)^{x0}
+     * (3c) eta_2 = (-1)^{x0+x1}
+     * (3d) eta_3 = (-1)^{x0+x1+x2}
+     * Boundary conditions are imposed by "rephasing" the links 
+     * on the boundary, with "1" for periodic and "-1" for anti-periodic.
+     */
+    typedef typename Simd::scalar_type GridScalar;
+
     conformable(Uds.Grid(), GaugeGrid);
     conformable(Uthin.Grid(), GaugeGrid);
     conformable(Ufat.Grid(), GaugeGrid);
+
     GaugeLinkField U(GaugeGrid);
     GaugeLinkField UU(GaugeGrid);
     GaugeLinkField UUU(GaugeGrid);
     GaugeLinkField Udag(GaugeGrid);
     GaugeLinkField UUUdag(GaugeGrid);
-    for (int mu = 0; mu < Nd; mu++) {
 
+    Lattice<iScalar<vInteger>> x(GaugeGrid), y(GaugeGrid), t(GaugeGrid);
+    Lattice<iScalar<vInteger>> tx(GaugeGrid), txy(GaugeGrid), xyzt(GaugeGrid);
+
+    LatticeCoordinate(x, 0);
+    LatticeCoordinate(y, 1);
+    LatticeCoordinate(t, 3);
+    tx = t + x;
+    txy = tx + y;
+
+    for (int mu = 0; mu < Nd; mu++) {
+      /*
       // Staggered Phase.
       Lattice<iScalar<vInteger> > coor(GaugeGrid);
       Lattice<iScalar<vInteger> > x(GaugeGrid); LatticeCoordinate(x,0);
@@ -132,32 +167,49 @@ public:
       if ( mu == 1 ) phases = where( mod(x    ,2)==(Integer)0, phases,-phases);
       if ( mu == 2 ) phases = where( mod(lin_z,2)==(Integer)0, phases,-phases);
       if ( mu == 3 ) phases = where( mod(lin_t,2)==(Integer)0, phases,-phases);
+      */
+
+      ComplexField bcs(GaugeGrid), phases(GaugeGrid);
+      Lattice<iScalar<vInteger>> coor(GaugeGrid);
+      int N = GaugeGrid->GlobalDimensions()[mu] - 1;
+      auto bpha = Params.boundary_phases[mu];
+      GridScalar dirichlet(real(bpha), imag(bpha));
+
+      // staggered phases
+      phases = 1.0;
+      if (mu == 0) { phases = where(mod(t, 2) == (Integer)0,   phases, -phases); }
+      if (mu == 1) { phases = where(mod(tx, 2) == (Integer)0,  phases, -phases); }
+      if (mu == 2) { phases = where(mod(txy, 2) == (Integer)0, phases, -phases); }
+
+      // boundary conditions
+      bcs = 1.0;
+      LatticeCoordinate(coor, mu);
+      bcs = where(coor == (Integer)N, dirichlet*bcs, bcs);
 
       // 1 hop based on fat links
-      U      = PeekIndex<LorentzIndex>(Ufat, mu);
-      Udag   = adj( Cshift(U, mu, -1));
+      //U      = PeekIndex<LorentzIndex>(Ufat, mu);
+      U = bcs*PeekIndex<LorentzIndex>(Ufat, mu);
+      Udag = adj(Cshift(U, mu, -1));
 
-      U    = U    *phases;
-      Udag = Udag *phases;
+      U = U*phases;
+      Udag = Udag*phases;
 
-	InsertGaugeField(Uds,U,mu);
-	InsertGaugeField(Uds,Udag,mu+4);
-	//	PokeIndex<LorentzIndex>(Uds, U, mu);
-	//	PokeIndex<LorentzIndex>(Uds, Udag, mu + 4);
+	    InsertGaugeField(Uds, U, mu);
+	    InsertGaugeField(Uds, Udag, mu+4);
 
-      // 3 hop based on thin links. Crazy huh ?
-      U  = PeekIndex<LorentzIndex>(Uthin, mu);
-      UU = Gimpl::CovShiftForward(U,mu,U);
-      UUU= Gimpl::CovShiftForward(U,mu,UU);
+      // 3 hop based on thin links. Crazy huh?
+      //U = PeekIndex<LorentzIndex>(Uthin, mu);
+      U = bcs*PeekIndex<LorentzIndex>(Uthin, mu);
+      UU = Gimpl::CovShiftForward(U, mu, U);
+      UUU = Gimpl::CovShiftForward(U, mu, UU);
 	
       UUUdag = adj( Cshift(UUU, mu, -3));
 
-      UUU    = UUU    *phases;
-      UUUdag = UUUdag *phases;
+      UUU = UUU*phases;
+      UUUdag = UUUdag*phases;
 
-	InsertGaugeField(UUUds,UUU,mu);
-	InsertGaugeField(UUUds,UUUdag,mu+4);
-
+	    InsertGaugeField(UUUds, UUU, mu);
+	    InsertGaugeField(UUUds, UUUdag, mu+4);
     }
   }
 
