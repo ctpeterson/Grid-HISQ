@@ -51,7 +51,8 @@ NaiveStaggeredFermion<Impl>::NaiveStaggeredFermion(GridCartesian &Fgrid, GridRed
     Umu(&Fgrid),
     UmuEven(&Hgrid),
     UmuOdd(&Hgrid),
-    _tmp(&Hgrid)
+    _tmp(&Hgrid),
+    Dirichlet(0)
 {
   int vol4;
   int LLs=1;
@@ -62,6 +63,17 @@ NaiveStaggeredFermion<Impl>::NaiveStaggeredFermion(GridCartesian &Fgrid, GridRed
   vol4= _cbgrid->oSites();
   StencilEven.BuildSurfaceList(LLs,vol4);
   StencilOdd.BuildSurfaceList(LLs,vol4);
+
+  // Dirichlet boundary conditions
+  if (p.dirichlet.size() == Nd) {
+    Coordinate block = p.dirichlet;
+    if (block[0] or block[1] or block[2] or block[3]) {
+      Dirichlet = 1;
+      Block = block;
+      std::cout << GridLogMessage << " NaiveStaggeredFermion: non-trivial Dirichlet boundary condition " << block << std::endl;
+      std::cout << GridLogMessage << " NaiveStaggeredFermion: partial Dirichlet " << p.partialDirichlet << std::endl;
+    }
+  } else { Coordinate block(Nd, 0); Block = block; }
 }
 
 template <class Impl>
@@ -93,10 +105,37 @@ void NaiveStaggeredFermion<Impl>::CopyGaugeCheckerboards(void)
   pickCheckerboard(Odd,  UmuOdd ,  Umu);
 }
 template <class Impl>
-void NaiveStaggeredFermion<Impl>::ImportGauge(const GaugeField &_U) 
+void NaiveStaggeredFermion<Impl>::ImportGauge(const GaugeField &Uin) 
 {
+  GaugeField _U = Uin;
   GaugeLinkField U(GaugeGrid());
   DoubledGaugeField _UUU(GaugeGrid());
+
+  ////////////////////////////////
+  // Dirichlet boundary conditions
+  ////////////////////////////////
+  if (Dirichlet) {
+    if (this->Params.partialDirichlet) { std::cout << GridLogMessage << " partialDirichlet BCs " << Block << std::endl; }
+    else { std::cout << GridLogMessage << " FULL Dirichlet BCs " << Block << std::endl; }
+
+    std::cout << GridLogMessage << " Checking block size multiple of rank boundaries for Dirichlet " << std::endl;
+    for (int mu = 0; mu < Nd; ++mu) {
+      int GaugeBlock = Block[mu];
+      int ldim = GaugeGrid()->LocalDimensions()[mu];
+      if (GaugeBlock) { GRID_ASSERT((GaugeBlock % ldim) == 0); }
+    }
+
+    // apply Dirichlet filter to input gauge field
+    if (this->Params.partialDirichlet) { std::cout << GridLogMessage << " Dirichlet " << Dirichlet << " NOT filtered gauge field " << std::endl; }
+    else {
+      std::cout << " Dirichlet filtering gauge field BCs block " << Block << std::endl;
+      Coordinate GaugeBlock(Nd);
+      for (int mu = 0; mu < Nd; ++mu) { GaugeBlock[mu] = Block[mu]; }
+      DirichletFilter<GaugeField> Filter(GaugeBlock);
+      Filter.applyFilter(_U);
+    }
+  }
+
   ////////////////////////////////////////////////////////
   // Double Store should take two fields for Naik and one hop separately.
   // Discard teh Naik as Naive
