@@ -47,6 +47,8 @@ directory
  *   This material is based upon work supported by the U.S. Department of Energy, 
  *   Office of Science, Office of Advanced Scientific Computing Research, Scientific 
  *   Discovery through Advanced Computing (SciDAC) program.
+ * 
+ *   Michael Lynch added support for proper precision inhertience
 */
 
 #include <cassert>
@@ -145,6 +147,8 @@ private:
   typedef typename Eigen::Matrix<std::complex<double>, Nc, Nc> EigenScalarMatrix;
   typedef typename Eigen::JacobiSVD<EigenScalarMatrix> EigenSVD;
 
+  typedef Lattice<typename ComplexField::vector_object::Realified> RealField;
+
   UnitaryProjectionContext ctx;
 
 public:
@@ -181,7 +185,7 @@ private:
   void _adjugate3(GaugeLinkField &Ai, const GaugeLinkField& A) {
     GridBase *grid = A.Grid();
     GaugeLinkField T(grid);
-    LatticeComplex trA(grid),trA2(grid);
+    ComplexField trA(grid),trA2(grid);
     T = A*A;
     trA = trace(A), trA2 = trace(T);
     Ai = T - trA*A;
@@ -201,8 +205,8 @@ private:
     GaugeLinkField adjA(grid);
     GaugeLinkField AC(grid), CA(grid), ACA(grid);
     GaugeLinkField adjAC(grid), CadjA(grid), adjACadjA(grid);
-    LatticeComplex unit(grid), t(grid), s(grid), r(grid);
-    LatticeComplex c0(grid), c1(grid), c2(grid), c3(grid);
+    ComplexField unit(grid), t(grid), s(grid), r(grid);
+    ComplexField c0(grid), c1(grid), c2(grid), c3(grid);
     _adjugate3(adjA,A);
     t = trace(A), s = trace(adjA);
     r = peekColour(A,0,0)*peekColour(adjA,0,0);
@@ -224,24 +228,24 @@ private:
     X -= c3*(AC + CA);
   }
 
-  LatticeComplex _absmin(const LatticeComplex& x, const LatticeComplex& y) { 
-    LatticeReal xr = toReal(x);
-    LatticeReal yr = toReal(y);
+  ComplexField _absmin(const ComplexField& x, const ComplexField& y) { 
+    RealField xr = toReal(x);
+    RealField yr = toReal(y);
     xr = abs(xr);
     return where(xr <= yr, x, y); 
   }
 
-  LatticeComplex _absmax(const LatticeComplex& x, const LatticeComplex& y) { 
-    LatticeReal xr = toReal(x);
-    LatticeReal yr = toReal(y);
+  ComplexField _absmax(const ComplexField& x, const ComplexField& y) { 
+    RealField xr = toReal(x);
+    RealField yr = toReal(y);
     xr = abs(xr);
     return where(xr >= yr, x, y); 
   }
 
   void _eigs3SVD(
-    LatticeComplex& e0,
-    LatticeComplex& e1,
-    LatticeComplex& e2,
+    ComplexField& e0,
+    ComplexField& e1,
+    ComplexField& e2,
     const GaugeLinkField& u
   ) {
     GridBase* grid = u.Grid();
@@ -274,16 +278,16 @@ private:
   }
 
   void _eigs3(
-    LatticeComplex& f0,
-    LatticeComplex& f1,
-    LatticeComplex& f2,
+    ComplexField& f0,
+    ComplexField& f1,
+    ComplexField& f2,
     const GaugeLinkField& q,
     const GaugeLinkField& q2
   ) {
     GridBase *grid = q.Grid();
     Complex k1 = 1.0/3.0, k2 = 0.5*k1, k3 = 2.0*M_PI*k1;
-    LatticeComplex ir(grid), uv(grid);
-    LatticeComplex a0(grid), a1(grid), a2(grid);
+    ComplexField ir(grid), uv(grid);
+    ComplexField a0(grid), a1(grid), a2(grid);
 
     ir = SMALL, uv = 1.0; 
 
@@ -322,9 +326,9 @@ private:
      */
     GridBase *grid = u.Grid();
     GaugeLinkField unity(grid), q(grid), q2(grid);
-    LatticeComplex e0(grid), e1(grid), e2(grid);
-    LatticeComplex f0(grid), f1(grid), f2(grid);
-    LatticeComplex unit(grid), detA(grid), detB(grid);
+    ComplexField e0(grid), e1(grid), e2(grid);
+    ComplexField f0(grid), f1(grid), f2(grid);
+    ComplexField unit(grid), detA(grid), detB(grid);
 
     // Cayley-Hamilton: eigenvalues of q = u†u
     unit = 1.0, unity = 1.0;
@@ -502,11 +506,11 @@ public:
     GridBase* grid = u.Grid();
     GaugeLinkField unity(grid), q(grid), q2(grid);
     GaugeLinkField d0(grid), d1(grid), d2(grid);
-    LatticeComplex e0(grid), e1(grid), e2(grid);
-    LatticeComplex f0(grid), f1(grid), f2(grid);
-    LatticeComplex unit(grid), zero(grid);
-    LatticeComplex detA(grid), detB(grid), relDetDiff(grid);
-    LatticeReal eps(grid), minei(grid);
+    ComplexField e0(grid), e1(grid), e2(grid);
+    ComplexField f0(grid), f1(grid), f2(grid);
+    ComplexField unit(grid), zero(grid);
+    ComplexField detA(grid), detB(grid), relDetDiff(grid);
+    RealField eps(grid), minei(grid);
 
     // numerical constants
     unit = 1.0, unity = 1.0, zero = 0.0, eps = ctx.derivativeEigenvalueCutoff;
@@ -528,7 +532,7 @@ public:
     // conditions for falling back on SVD: https://doi.org/10.1103/PhysRevD.75.054502
     // Replaces eigenvalues of Vdag V wtih squared eigenvalues of SVD if conditions are met
     if ((ctx.backupSVD) && (!ctx.svdOnlyDerivative)) {
-      LatticeComplex oe0 = e0, oe1 = e1, oe2 = e2;
+      ComplexField oe0 = e0, oe1 = e1, oe2 = e2;
       RealD relativeSVDTolerance = ctx.relativeSVDTolerance;
       RealD absoluteSVDTolerance = ctx.absoluteSVDTolerance;
 
@@ -695,15 +699,15 @@ private:
     const GaugeLinkField& u,
     const GaugeLinkField& q,
     const GaugeLinkField& q2,
-    const LatticeComplex& eig0,
-    const LatticeComplex& eig1,
-    const LatticeComplex& eig2
+    const ComplexField& eig0,
+    const ComplexField& eig1,
+    const ComplexField& eig2
   ) {
     GridBase* grid = u.Grid();
     GaugeLinkField unity(grid);
-    LatticeComplex e0(grid), e1(grid), e2(grid);
-    LatticeComplex f0(grid), f1(grid), f2(grid);
-    LatticeComplex unit(grid);
+    ComplexField e0(grid), e1(grid), e2(grid);
+    ComplexField f0(grid), f1(grid), f2(grid);
+    ComplexField unit(grid);
 
     // Cayley-Hamilton: "u, v, w" coefficients [Eqn. C6 of PRD(75)054502]
     f0 = sqrt(eig0), f1 = sqrt(eig1), f2 = sqrt(eig2);
@@ -730,14 +734,14 @@ private:
     GaugeLinkField& v,
     const GaugeLinkField& u,
     const GaugeLinkField& q,
-    const LatticeComplex& e0,
-    const LatticeComplex& e1,
-    const LatticeComplex& e2
+    const ComplexField& e0,
+    const ComplexField& e1,
+    const ComplexField& e2
   ) {
     // Jacobi-based singular value decomposition: fallback for ill-conditioned links
     // conditions for falling back on SVD: https://doi.org/10.1103/PhysRevD.75.054502
     GridBase* grid = u.Grid();
-    LatticeComplex detA = Determinant(q), detB = e0*e1*e2;
+    ComplexField detA = Determinant(q), detB = e0*e1*e2;
 
     {
       autoView(detA_v, detA, CpuRead);
@@ -783,7 +787,7 @@ private:
     # 
     GridBase* grid = u.Grid();
     GaugeLinkField unity(grid), q(grid), q2(grid);
-    LatticeComplex e0(grid), e1(grid), e2(grid);
+    ComplexField e0(grid), e1(grid), e2(grid);
 
     _eigs3(e0, e1, e2, q, q2, u);
     _CayleyHamiltonU3(v, u, q, q2, e0, e1, e2);
