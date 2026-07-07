@@ -66,13 +66,13 @@ NaiveStaggeredFermion<Impl>::NaiveStaggeredFermion(GridCartesian &Fgrid, GridRed
 
   // Dirichlet boundary conditions
   if (p.dirichlet.size() == Nd) {
+    Coordinate block = p.dirichlet;
     if (block[0] or block[1] or block[2] or block[3]) {
       GRID_ASSERT(p.partialDirichlet == 0);
       std::cout << GridLogMessage << " NaiveStaggeredFermion: non-trivial Dirichlet boundary condition " << block << std::endl;
-      Coordinate block = p.dirichlet;
       Dirichlet = 1;
       Block = block;
-    } else { Coordinate block(Nd, 0); Block = block; }
+    }
   } else { Coordinate block(Nd, 0); Block = block; }
 }
 
