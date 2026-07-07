@@ -66,13 +66,13 @@ NaiveStaggeredFermion<Impl>::NaiveStaggeredFermion(GridCartesian &Fgrid, GridRed
 
   // Dirichlet boundary conditions
   if (p.dirichlet.size() == Nd) {
-    Coordinate block = p.dirichlet;
     if (block[0] or block[1] or block[2] or block[3]) {
+      GRID_ASSERT(p.partialDirichlet == 0);
+      std::cout << GridLogMessage << " NaiveStaggeredFermion: non-trivial Dirichlet boundary condition " << block << std::endl;
+      Coordinate block = p.dirichlet;
       Dirichlet = 1;
       Block = block;
-      std::cout << GridLogMessage << " NaiveStaggeredFermion: non-trivial Dirichlet boundary condition " << block << std::endl;
-      std::cout << GridLogMessage << " NaiveStaggeredFermion: partial Dirichlet " << p.partialDirichlet << std::endl;
-    }
+    } else { Coordinate block(Nd, 0); Block = block; }
   } else { Coordinate block(Nd, 0); Block = block; }
 }
 
@@ -115,8 +115,7 @@ void NaiveStaggeredFermion<Impl>::ImportGauge(const GaugeField &Uin)
   // Dirichlet boundary conditions
   ////////////////////////////////
   if (Dirichlet) {
-    if (this->Params.partialDirichlet) { std::cout << GridLogMessage << " partialDirichlet BCs " << Block << std::endl; }
-    else { std::cout << GridLogMessage << " FULL Dirichlet BCs " << Block << std::endl; }
+    std::cout << GridLogMessage << " FULL Dirichlet BCs " << Block << std::endl; 
 
     std::cout << GridLogMessage << " Checking block size multiple of rank boundaries for Dirichlet " << std::endl;
     for (int mu = 0; mu < Nd; ++mu) {
@@ -126,14 +125,11 @@ void NaiveStaggeredFermion<Impl>::ImportGauge(const GaugeField &Uin)
     }
 
     // apply Dirichlet filter to input gauge field
-    if (this->Params.partialDirichlet) { std::cout << GridLogMessage << " Dirichlet " << Dirichlet << " NOT filtered gauge field " << std::endl; }
-    else {
-      std::cout << " Dirichlet filtering gauge field BCs block " << Block << std::endl;
-      Coordinate GaugeBlock(Nd);
-      for (int mu = 0; mu < Nd; ++mu) { GaugeBlock[mu] = Block[mu]; }
-      DirichletFilter<GaugeField> Filter(GaugeBlock);
-      Filter.applyFilter(_U);
-    }
+    std::cout << " Dirichlet filtering gauge field BCs block " << Block << std::endl;
+    Coordinate GaugeBlock(Nd);
+    for (int mu = 0; mu < Nd; ++mu) { GaugeBlock[mu] = Block[mu]; }
+    DirichletFilter<GaugeField> Filter(GaugeBlock);
+    Filter.applyFilter(_U);
   }
 
   ////////////////////////////////////////////////////////

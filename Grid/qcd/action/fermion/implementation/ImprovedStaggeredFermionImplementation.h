@@ -53,8 +53,9 @@ ImprovedStaggeredFermion<Impl>::ImprovedStaggeredFermion(GridCartesian &Fgrid, G
     UmuOdd(&Hgrid),
     UUUmu(&Fgrid),
     UUUmuEven(&Hgrid),
-    UUUmuOdd(&Hgrid) ,
-    _tmp(&Hgrid)
+    UUUmuOdd(&Hgrid),
+    _tmp(&Hgrid),
+    Dirichlet(0)
 {
   int vol4;
   int LLs=1;
@@ -66,6 +67,17 @@ ImprovedStaggeredFermion<Impl>::ImprovedStaggeredFermion(GridCartesian &Fgrid, G
   vol4= _cbgrid->oSites();
   StencilEven.BuildSurfaceList(LLs,vol4);
   StencilOdd.BuildSurfaceList(LLs,vol4);
+
+  // Dirichlet boundary conditions
+  if (p.dirichlet.size() == Nd) {
+    if (block[0] or block[1] or block[2] or block[3]) {
+      GRID_ASSERT(p.partialDirichlet == 0);
+      std::cout << GridLogMessage << " ImprovedStaggeredFermion: non-trivial Dirichlet boundary condition " << block << std::endl;
+      Coordinate block = p.dirichlet;
+      Dirichlet = 1;
+      Block = block;
+    } else { Coordinate block(Nd, 0); Block = block; }
+  } else { Coordinate block(Nd, 0); Block = block; }
 }
 
 template <class Impl>
@@ -74,9 +86,7 @@ ImprovedStaggeredFermion<Impl>::ImprovedStaggeredFermion(GaugeField &_Uthin, Gau
 							 RealD _c1, RealD _c2,RealD _u0,
 							 const ImplParams &p)
   : ImprovedStaggeredFermion(Fgrid,Hgrid,_mass,_c1,_c2,_u0,p)
-{
-  ImportGauge(_Uthin,_Ufat);
-}
+{ ImportGauge(_Uthin,_Ufat); }
 
 ////////////////////////////////////////////////////////////
 // Momentum space propagator should be 
@@ -98,7 +108,6 @@ void ImprovedStaggeredFermion<Impl>::ImportGaugeSimple(const GaugeField &_Utripl
   GaugeLinkField U(GaugeGrid());
 
   for (int mu = 0; mu < Nd; mu++) {
-
     U = PeekIndex<LorentzIndex>(_Utriple, mu);
     PokeIndex<LorentzIndex>(UUUmu, U, mu );
 
@@ -110,14 +119,12 @@ void ImprovedStaggeredFermion<Impl>::ImportGaugeSimple(const GaugeField &_Utripl
 
     U = adj( Cshift(U, mu, -1));
     PokeIndex<LorentzIndex>(Umu, -U, mu+4);
-
   }
   CopyGaugeCheckerboards();
 }
 template <class Impl>
 void ImprovedStaggeredFermion<Impl>::ImportGaugeSimple(const DoubledGaugeField &_UUU,const DoubledGaugeField &_U) 
 {
-
   Umu   = _U;
   UUUmu = _UUU;
   CopyGaugeCheckerboards();
@@ -131,15 +138,39 @@ void ImprovedStaggeredFermion<Impl>::CopyGaugeCheckerboards(void)
   pickCheckerboard(Even, UUUmuEven,UUUmu);
   pickCheckerboard(Odd,  UUUmuOdd, UUUmu);
 }
+
 template <class Impl>
-void ImprovedStaggeredFermion<Impl>::ImportGauge(const GaugeField &_Uthin,const GaugeField &_Ufat) 
+void ImprovedStaggeredFermion<Impl>::ImportGauge(const GaugeField &_Ut, const GaugeField &_Uf) 
 {
+  GaugeField _Uthin = _Ut;
+  GaugeField _Ufat  = _Uf;
   GaugeLinkField U(GaugeGrid());
+
+  ////////////////////////////////
+  // Dirichlet boundary conditions
+  ////////////////////////////////
+  if (Dirichlet) {
+    std::cout << GridLogMessage << " FULL Dirichlet BCs " << Block << std::endl;
+    
+    std::cout << GridLogMessage << " Checking block size multiple of rank boundaries for Dirichlet " << std::endl;
+    for (int mu = 0; mu < Nd; ++mu) {
+      int GaugeBlock = Block[mu];
+      int ldim = GaugeGrid()->LocalDimensions()[mu];
+      if (GaugeBlock) { GRID_ASSERT((GaugeBlock % ldim) == 0); }
+    }
+
+    std::cout << " Dirichlet filtering gauge field BCs block " << Block << std::endl;
+    Coordinate GaugeBlock(Nd);
+    for (int mu = 0; mu < Nd; ++mu) { GaugeBlock[mu] = Block[mu]; }
+    DirichletFilter<GaugeField> ThinFilter(GaugeBlock), FatFilter(GaugeBlock, 3);
+    ThinFilter.applyFilter(_Uthin);
+    FatFilter.applyFilter(_Ufat);
+  }
 
   ////////////////////////////////////////////////////////
   // Double Store should take two fields for Naik and one hop separately.
   ////////////////////////////////////////////////////////
-  Impl::DoubleStore(GaugeGrid(), UUUmu, Umu, _Uthin, _Ufat );
+  Impl::DoubleStore(GaugeGrid(), UUUmu, Umu, _Uthin, _Ufat);
 
   ////////////////////////////////////////////////////////
   // Apply scale factors to get the right fermion Kinetic term
@@ -147,7 +178,6 @@ void ImprovedStaggeredFermion<Impl>::ImportGauge(const GaugeField &_Uthin,const 
   // 0.5 ( U p(x+mu) - Udag(x-mu) p(x-mu) ) 
   ////////////////////////////////////////////////////////
   for (int mu = 0; mu < Nd; mu++) {
-
     U = PeekIndex<LorentzIndex>(Umu, mu);
     PokeIndex<LorentzIndex>(Umu, U*( 0.5*c1/u0), mu );
     
@@ -237,58 +267,33 @@ void ImprovedStaggeredFermion<Impl>::MooeeInvDag(const FermionField &in,FermionF
 ///////////////////////////////////
 
 template <class Impl>
-void ImprovedStaggeredFermion<Impl>::DerivInternal(StencilImpl &st, DoubledGaugeField &U, DoubledGaugeField &UUU, 
-						   GaugeField & mat,
-						   const FermionField &A, const FermionField &B, int dag) 
-{
+void ImprovedStaggeredFermion<Impl>::DerivInternal(
+  StencilImpl& st, 
+  DoubledGaugeField& U, 
+  DoubledGaugeField& UUU, 
+	GaugeField& mat,
+	const FermionField& A, 
+  const FermionField& B, 
+  int dag
+) {
+  /**
+   * @brief improved staggered fermion derivative
+   * @author Curtis Taylor Peterson
+   */
   GRID_ASSERT((dag == DaggerNo) || (dag == DaggerYes));
 
   Compressor compressor;
-
   FermionField Btilde(B.Grid());
-  FermionField Atilde(B.Grid());
-  Atilde = A;
+  FermionField Atilde = A;
 
   st.HaloExchange(B, compressor);
 
-  for (int mu = 0; mu < Nd; mu++) {
-
-    ////////////////////////
-    // Call the single hop
-    ////////////////////////
-    autoView( U_v   , U, CpuRead);
-    autoView( UUU_v , UUU, CpuRead);
-    autoView( B_v      , B, CpuWrite);
-    autoView( Btilde_v , Btilde, CpuWrite);
-    /*
-    thread_for(sss,B.Grid()->oSites(),{
-      Kernels::DhopDirKernel(st, U_v, UUU_v, st.CommBuf(), sss, sss, B_v, Btilde_v, mu,1);
-    });
-    */
-
-    // Force in three link terms
-    //
-    //    Impl::InsertForce4D(mat, Btilde, Atilde, mu);
-    //
-    // dU_ac(x)/dt = i p_ab U_bc(x)
-    //
-    // => dS_f/dt = dS_f/dU_ac(x) . dU_ac(x)/dt =  i p_ab U_bc(x) dS_f/dU_ac(x) 
-    //
-    // One link: form fragments S_f = A U B 
-    //
-    //         write Btilde = U(x) B(x+mu)
-    //
-    // mat+= TraceIndex<SpinIndex>(outerProduct(Btilde,A)); 
-    // 
-    // Three link: form fragments S_f = A UUU B 
-    //
-    // mat+= outer ( A, UUUB) <-- Best take DhopDeriv with one linke or identity matrix
-    // mat+= outer ( AU, UUB) <-- and then use covariant cshift?
-    // mat+= outer ( AUU, UB) <-- Returned from call to DhopDir
-
-    GRID_ASSERT(0);// need to figure out the force interface with a blasted three link term.
-    
+  for (int mu = 0; mu < Nd; ++mu) {
+    Kernels::DhopDir(st, U, U, B, Btilde, mu, 1, 0);
+    pokeLorentz(mat, outerProduct(Btilde, Atilde), mu);
   }
+
+  if (dag) { mat = -mat; }
 }
 
 template <class Impl>

@@ -40,11 +40,11 @@ struct DirichletFilter: public MomentumFilterBase<MomentaField>
   typedef iScalar<iScalar<iScalar<vector_type> > >            ScalarType; //complex phase for each site
   
   Coordinate Block;
+  int Width;
   
-  DirichletFilter(const Coordinate &_Block): Block(_Block){}
+  DirichletFilter(const Coordinate &_Block, int _Width = 1): Block(_Block), Width(_Width) { }
 
-  void applyFilter(MomentaField &P) const override
-  {
+  void applyFilter(MomentaField &P) const override {
     GridBase *grid = P.Grid();
     typedef decltype(PeekIndex<LorentzIndex>(P, 0)) LatCM;
     ////////////////////////////////////////////////////
@@ -52,16 +52,16 @@ struct DirichletFilter: public MomentumFilterBase<MomentaField>
     ////////////////////////////////////////////////////
     LatticeInteger coor(grid); 
     LatCM zz(grid); zz = Zero();
-    for(int mu=0;mu<Nd;mu++) {
+    for(int mu = 0; mu < Nd; ++mu) {
       if ( (Block[mu]) && (Block[mu] <= grid->GlobalDimensions()[mu] ) ) {
-	// If costly could provide Grid earlier and precompute masks
-	std::cout << GridLogMessage << " Dirichlet in mu="<<mu<<std::endl;
-	LatticeCoordinate(coor,mu);
-	auto P_mu = PeekIndex<LorentzIndex>(P, mu);
-	P_mu = where(mod(coor,Block[mu])==Integer(Block[mu]-1),zz,P_mu);
-	PokeIndex<LorentzIndex>(P, P_mu, mu);
-      }
-    }
+	      // If costly could provide Grid earlier and precompute masks
+	      std::cout << GridLogMessage << " Dirichlet in mu="<<mu<<std::endl;
+	      LatticeCoordinate(coor,mu);
+	      auto P_mu = PeekIndex<LorentzIndex>(P, mu);
+        for (int w = 0; w < Width; ++w) 
+        { P_mu = where(mod(coor,Block[mu])==Integer(Block[mu]-w-1),zz,P_mu); }
+	      PokeIndex<LorentzIndex>(P, P_mu, mu);
+    } }
   }
 };
 
