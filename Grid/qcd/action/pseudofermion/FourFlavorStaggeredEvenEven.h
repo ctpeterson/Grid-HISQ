@@ -137,14 +137,17 @@ public:
     ConfigurationBase<GaugeField>& U, 
     GridSerialRNG& sRNG, 
     GridParallelRNG& pRNG
-  ) { refresh(U.get_SmearedU(), sRNG, pRNG); }
+  ) { refresh(U.get_U(this->is_smeared), sRNG, pRNG); }
 
-  virtual RealD S(ConfigurationBase<GaugeField>& U) { return S(U.get_SmearedU()); }
+  virtual RealD S(ConfigurationBase<GaugeField>& U) 
+  { return S(U.get_U(this->is_smeared)); }
 
   virtual RealD Sinitial(ConfigurationBase<GaugeField>& U) { return _action(); }
 
-  virtual void deriv(ConfigurationBase<GaugeField>& U, GaugeField& dSdU)
-  { deriv(U.get_SmearedU(), dSdU); if (this->is_smeared) { U.smeared_force(dSdU); } }
+  virtual void deriv(ConfigurationBase<GaugeField>& U, GaugeField& dSdU) { 
+    deriv(U.get_U(this->is_smeared), dSdU); 
+    if (this->is_smeared) { U.smeared_force(dSdU); } 
+  }
 };
 
 NAMESPACE_END(Grid);
