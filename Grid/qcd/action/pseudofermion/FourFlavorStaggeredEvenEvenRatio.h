@@ -135,13 +135,13 @@ private:
     DerivativeSolver(MdagMOp, Y, X);    
     DenOp.M(X, Y); 
     NumOp.MDeriv(force, X, phi, DaggerYes); 
-    dSdU = force;
+    dSdU = -force;
     NumOp.MDeriv(force, phi, X, DaggerNo); 
-    dSdU += force;
+    dSdU -= force;
     DenOp.MDeriv(force, Y, X, DaggerNo); 
-    dSdU -= force;
+    dSdU += force;
     DenOp.MDeriv(force, X, Y, DaggerYes); 
-    dSdU -= force;
+    dSdU += force;
   }
 
 public:

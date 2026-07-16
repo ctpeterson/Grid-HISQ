@@ -119,9 +119,9 @@ private:
     FermOp.M(X, Y);
 
     FermOp.MDeriv(tmp, Y, X, DaggerNo);
-    dSdU = -tmp;
+    dSdU = tmp;
     FermOp.MDeriv(tmp, X, Y, DaggerYes);
-    dSdU -= tmp;
+    dSdU += tmp;
   }
 
 public:
