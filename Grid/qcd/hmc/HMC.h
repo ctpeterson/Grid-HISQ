@@ -64,7 +64,7 @@ struct HMCparameters: Serializable {
     StartTrajectory   = 0;
     Trajectories      = 10;
     StartingType      = "HotStart";
-    PerformRandomShift = true;
+    PerformRandomShift = false;
     /////////////////////////////////
   }
 
@@ -142,8 +142,7 @@ private:
 
     GridBase *Grid = U.Grid();
 
-    if(Params.PerformRandomShift){
-#if 0
+    if (Params.PerformRandomShift) {
       //////////////////////////////////////////////////////////////////////////////////////////////////////
       // Mainly for DDHMC perform a random translation of U modulo volume
       //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -154,25 +153,24 @@ private:
       for(int mu=0;mu<Grid->Nd();mu++) Umu[mu] = PeekIndex<LorentzIndex>(U, mu);
 
       for(int d=0;d<Grid->Nd();d++) {
+	      int L = Grid->GlobalDimensions()[d];
 
-	int L = Grid->GlobalDimensions()[d];
+	      RealD rn_uniform;  
+        random(sRNG, rn_uniform);
+	      int shift = (int)(rn_uniform*L);
 
-	RealD rn_uniform;  random(sRNG, rn_uniform);
-
-	int shift = (int) (rn_uniform*L);
-
-	std::cout << shift;
-	if(d<Grid->Nd()-1) std::cout <<",";
-	else               std::cout <<"]\n";
+	      std::cout << shift;
+	      if (d < Grid->Nd() - 1) { std::cout <<","; }
+	      else { std::cout <<"]\n"; }
       
-	//shift all fields together in a way that respects the gauge BCs
-	for(int mu=0; mu < Grid->Nd(); mu++)
-	  Umu[mu] = FieldImplementation::CshiftLink(Umu[mu],d,shift);
+	      //shift all fields together in a way that respects the gauge BCs
+	      for (int mu = 0; mu < Grid->Nd(); mu++)
+	      { Umu[mu] = FieldImplementation::CshiftLink(Umu[mu], d, shift); }
 
-	for(int mu=0;mu<Grid->Nd();mu++) PokeIndex<LorentzIndex>(U,Umu[mu],mu);
+	      for (int mu = 0; mu < Grid->Nd(); mu++) 
+        { PokeIndex<LorentzIndex>(U, Umu[mu], mu); }
       }
       std::cout << GridLogMessage << "--------------------------------------------------\n";
-#endif	
     }
 
     TheIntegrator.reset_timer();
