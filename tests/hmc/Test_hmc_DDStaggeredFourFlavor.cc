@@ -123,7 +123,7 @@ GRID_SERIALIZABLE(
 ////////////////////////////////////////////////////////////////
 int main(int argc, char **argv) {
   Grid_init(&argc, &argv);
-
+  
   ////////////////////////////////////////////////////////////////
   // Hamiltonian Monte Carlo setup
   ////////////////////////////////////////////////////////////////
@@ -162,9 +162,10 @@ int main(int argc, char **argv) {
   /////////////////////////////////////////////////////////////////
   // Hamiltonian Monte Carlo wrapper
   /////////////////////////////////////////////////////////////////
-  HMCWrapper TheHMC(HMCParams);
+  HMCWrapper TheHMC;
 
   TheHMC.ReadCommandLine(argc, argv);
+  TheHMC.Parameters = HMCParams;
   TheHMC.Resources.AddFourDimGrid("gauge");
   TheHMC.Resources.LoadNerscCheckpointer(CPParams);
   TheHMC.Resources.SetRNGSeeds(RNGParams);
