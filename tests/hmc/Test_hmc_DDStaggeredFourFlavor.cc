@@ -162,10 +162,9 @@ int main(int argc, char **argv) {
   /////////////////////////////////////////////////////////////////
   // Hamiltonian Monte Carlo wrapper
   /////////////////////////////////////////////////////////////////
-  HMCWrapper TheHMC;
+  HMCWrapper TheHMC(HMCParams);
 
   TheHMC.ReadCommandLine(argc, argv);
-  TheHMC.Parameters = HMCParams;
   TheHMC.Resources.AddFourDimGrid("gauge");
   TheHMC.Resources.LoadNerscCheckpointer(CPParams);
   TheHMC.Resources.SetRNGSeeds(RNGParams);
