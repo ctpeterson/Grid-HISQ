@@ -40,8 +40,7 @@ directory
 NAMESPACE_BEGIN(Grid);
 
 template <class Impl>
-class FourFlavorStaggeredEvenEvenPseudoFermionAction: public Action<typename Impl::GaugeField> 
-{
+class FourFlavorStaggeredEvenEvenPseudoFermionAction: public Action<typename Impl::GaugeField> {
 public: INHERIT_IMPL_TYPES(Impl);
 
 private:
@@ -72,14 +71,16 @@ public:
 
   virtual std::string LogParameters() { 
     std::stringstream sstream;
-    sstream << GridLogMessage << "["<<action_name()<<"] has no parameters" << std::endl;
+    sstream << GridLogMessage 
+            << "[" <<action_name() << "] has no parameters" 
+            << " mass: " << FermOp.Mass()
+            << std::endl;
     return sstream.str();
   }
 
 private:
   void _refresh(GridParallelRNG& pRNG) {
     FermionField eta(FermOp.FermionGrid()), phi(FermOp.FermionGrid());
-    
     gaussian(pRNG, eta); 
     eta = _scale*eta; 
     FermOp.Mdag(eta, phi); 
@@ -87,41 +88,37 @@ private:
   }
 
   RealD _action() {
-    FermionField psi(FermOp.FermionGrid()), eta(FermOp.FermionGrid());
     FermionField Psi(FermOp.FermionRedBlackGrid());
-    SchurStaggeredOperator<FermionOperator<Impl>, FermionField> MdagM(FermOp);
+    FermionField Chi(FermOp.FermionRedBlackGrid());
+    SchurStaggeredOperator<FermionOperator<Impl>, FermionField> MdagMOp(FermOp);
+    RealD mass2 = FermOp.Mass()*FermOp.Mass();
 
-    Psi.Checkerboard() = Even;
     Psi = Zero();
-    psi = Zero();
-    eta = Zero();
-
-    ActionSolver(MdagM, Phi, Psi);
-    setCheckerboard(psi, Psi);
-    FermOp.M(psi, eta);
-
-    return norm2(eta); 
+    ActionSolver(MdagMOp, Phi, Psi);
+    FermOp.Meooe(Psi, Chi);
+    return mass2*norm2(Psi) + norm2(Chi);
   }
 
   void _deriv(GaugeField& dSdU) {
-    GaugeField tmp(dSdU.Grid());
-    FermionField X(FermOp.FermionGrid()), Y(FermOp.FermionGrid());
-    FermionField PsiE(FermOp.FermionRedBlackGrid());
+    GaugeField ForceE(FermOp.GaugeRedBlackGrid());
+    GaugeField ForceO(FermOp.GaugeRedBlackGrid());
+    FermionField Psi(FermOp.FermionRedBlackGrid());
+    FermionField Chi(FermOp.FermionRedBlackGrid());
     SchurStaggeredOperator<FermionOperator<Impl>, FermionField> MdagM(FermOp);
 
-    PsiE.Checkerboard() = Even;
-    PsiE = Zero();
-    X = Zero();
-    Y = Zero();
+    ForceE.Checkerboard() = Even;
+    ForceO.Checkerboard() = Odd;
 
-    DerivativeSolver(MdagM, Phi, PsiE);
-    setCheckerboard(X, PsiE);
-    FermOp.M(X, Y);
+    Psi = Zero();
+    DerivativeSolver(MdagM, Phi, Psi);
+    FermOp.Meooe(Psi, Chi);
 
-    FermOp.MDeriv(tmp, Y, X, DaggerNo);
-    dSdU = tmp;
-    FermOp.MDeriv(tmp, X, Y, DaggerYes);
-    dSdU += tmp;
+    FermOp.MeoDeriv(ForceE, Psi, Chi, DaggerNo);
+    FermOp.MoeDeriv(ForceO, Chi, Psi, DaggerYes);
+
+    setCheckerboard(dSdU, ForceE);
+    setCheckerboard(dSdU, ForceO);
+    dSdU = -dSdU;
   }
 
 public:
