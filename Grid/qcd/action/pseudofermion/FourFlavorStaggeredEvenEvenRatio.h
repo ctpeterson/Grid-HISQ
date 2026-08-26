@@ -34,8 +34,8 @@ directory
 #pragma once
 #include <Grid/Grid.h>
 
-#ifndef QCD_PSEUDOFERMION_STAGGERED_EE_RATIO_H
-#define QCD_PSEUDOFERMION_STAGGERED_EE_RATIO_H
+#ifndef QCD_PSEUDOFERMION_FOUR_FLAVOR_STAGGERED_EVEN_EVEN_RATIO_H
+#define QCD_PSEUDOFERMION_FOUR_FLAVOR_STAGGERED_EVEN_EVEN_RATIO_H
 
 NAMESPACE_BEGIN(Grid);
 
@@ -122,7 +122,7 @@ private:
     Phi = Zero();
 
     gaussian(pRNG, eta);
-    eta = _scale*eta;
+    eta *= _scale;
     DenOp.Mdag(eta, b);
 
     pickCheckerboard(Even, be, b);
@@ -203,4 +203,4 @@ public:
 
 NAMESPACE_END(Grid);
 
-#endif
+#endif // QCD_PSEUDOFERMION_FOUR_FLAVOR_STAGGERED_EVEN_EVEN_RATIO_H

@@ -34,13 +34,21 @@ directory
 #pragma once
 #include <Grid/Grid.h>
 
-#ifndef QCD_PSEUDOFERMION_STAGGERED_EE_H
-#define QCD_PSEUDOFERMION_STAGGERED_EE_H
+#ifndef QCD_PSEUDOFERMION_FOUR_FLAVOR_STAGGERED_EVEN_EVEN_H
+#define QCD_PSEUDOFERMION_FOUR_FLAVOR_STAGGERED_EVEN_EVEN_H
 
 NAMESPACE_BEGIN(Grid);
 
 template <class Impl>
 class FourFlavorStaggeredEvenEvenPseudoFermionAction: public Action<typename Impl::GaugeField> {
+/**
+ * @brief Staggered even-even rational (rooted) pseudofermion action
+ * @author Curtis Taylor Peterson
+ * @details
+ * Implements staggered even-even rational (rooted) staggered pseudofermion action:
+ * (1) S = Phi^dagger M^dagger M Phi,
+ * where Phi is defined on even sites only.
+ */
 public: INHERIT_IMPL_TYPES(Impl);
 
 private:
@@ -72,8 +80,7 @@ public:
   virtual std::string LogParameters() { 
     std::stringstream sstream;
     sstream << GridLogMessage 
-            << "[" <<action_name() << "] has no parameters" 
-            << " mass: " << FermOp.Mass()
+            << "[" << action_name() << "] mass: " << FermOp.Mass()
             << std::endl;
     return sstream.str();
   }
@@ -82,7 +89,7 @@ private:
   void _refresh(GridParallelRNG& pRNG) {
     FermionField eta(FermOp.FermionGrid()), phi(FermOp.FermionGrid());
     gaussian(pRNG, eta); 
-    eta = _scale*eta; 
+    eta *= _scale;
     FermOp.Mdag(eta, phi); 
     pickCheckerboard(Even, Phi, phi); 
   }
@@ -149,4 +156,4 @@ public:
 
 NAMESPACE_END(Grid);
 
-#endif
+#endif // QCD_PSEUDOFERMION_FOUR_FLAVOR_STAGGERED_EVEN_EVEN_H
