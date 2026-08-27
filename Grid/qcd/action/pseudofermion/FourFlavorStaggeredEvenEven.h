@@ -65,9 +65,9 @@ public:
     FermionOperator<Impl>& Op,
     OperatorFunction<FermionField>& DS,
     OperatorFunction<FermionField>& AS
-  ):DerivativeSolver(DS),
+  ):FermOp(Op),
+    DerivativeSolver(DS),
     ActionSolver(AS),
-    FermOp(Op),
     Phi(Op.FermionRedBlackGrid()) {
     _scale = std::sqrt(0.5); 
     Phi.Checkerboard() = Even; 

@@ -92,9 +92,9 @@ public:
   StaggeredEvenEvenRational(
     FermionOperator<Impl>& Op,
     const StaggeredRationalActionParams& params
-  ):FermOp(Op),
-    Phi(Op.FermionRedBlackGrid()),
-    _params(params) {
+  ):_params(params),
+    FermOp(Op),
+    Phi(Op.FermionRedBlackGrid()) {
     GRID_ASSERT(_params.lo > 0.0 && "Lower bound of Remez approx must be positive");
     GRID_ASSERT(_params.hi > _params.lo && "Upper bound of Remez approx must be greater than lower bound");
 
@@ -145,7 +145,6 @@ public:
   }
 
 private:
-  // pole solutions only
   void _multiShiftSolve(
     const MultiShiftFunction& approx,
     const FermionField& in,
@@ -158,7 +157,6 @@ private:
     solver(MdagM, in, outs);
   }
 
-  // summed rational function
   void _multiShiftSolve(
     const MultiShiftFunction& approx,
     const FermionField& in,

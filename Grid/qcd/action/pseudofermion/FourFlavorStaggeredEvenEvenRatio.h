@@ -198,7 +198,6 @@ public:
     deriv(U.get_U(this->is_smeared), dSdU); 
     if (this->is_smeared) { U.smeared_force(dSdU); } 
   }
-
 };
 
 NAMESPACE_END(Grid);
