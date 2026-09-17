@@ -292,6 +292,8 @@ void ImprovedStaggeredFermion<Impl>::DerivInternal(
   for (int mu = 0; mu < Nd; ++mu) {
     Kernels::DhopDir(st, U, U, B, Btilde, mu, 1, 0);
     pokeLorentz(mat, outerProduct(Btilde, Atilde), mu);
+
+    // ... blasted 3-hop... not implemented
   }
 
   if (dag) { mat = -mat; }

@@ -9,6 +9,7 @@ Copyright (C) 2015-2016
 Author: Peter Boyle <paboyle@ph.ed.ac.uk>
 Author: neo <cossu@post.kek.jp>
 Author: Guido Cossu <guido.cossu@ed.ac.uk>
+Author: Curtis Taylor Peterson <curtistaylorpetersonwork@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -43,13 +44,31 @@ class ConfigurationBase
 public:
   ConfigurationBase() {}
   virtual ~ConfigurationBase() {}
-  virtual bool hasLongLink() const { return false; }
+
+  ///////////////////////////////
+  // Standard interface
+  ///////////////////////////////
   virtual void set_Field(Field& U) = 0;
   virtual void smeared_force(Field&) = 0;
-  virtual void smeared_multilink_force(Field& dSdU, const Field& dSdX, const Field& dSdY) { smeared_force(dSdU); }
   virtual Field& get_SmearedU() = 0;
-  virtual Field& get_SmearedLongU() { return get_SmearedU(); }
   virtual Field& get_U(bool smeared = false) = 0;
+
+  ///////////////////////////////
+  // Opt-in link interface
+  ///////////////////////////////
+  /**
+   * @brief Exposes the configuration container's LinkMap, if supported
+   * @details
+   * Returns a borrowed interface for resolving configuration outputs and pulling
+   * their derivatives back to the fundamental field. The default returns nullptr
+   * to indicate that the configuration does not provide this interface.
+   *
+   * Exposing a map does not activate an action's use of it; the action must opt in
+   * through useLinkMap or bindLinks, like Action's is_smeared. Ownership remains 
+   * with the configuration, which must keep the map alive and at a stable address 
+   * while its handles are in use.
+   */
+  virtual LinkMap<Field>* linkMap() { return nullptr; }
 };
 
 template <class GaugeField >
@@ -124,12 +143,70 @@ public:
       U.smeared_force(dSdU);
     }
   }
+
   ///////////////////////////////
   // Logging
   ///////////////////////////////
-  virtual std::string action_name()    = 0;                             // return the action name
-  virtual std::string LogParameters()  = 0;                             // prints action parameters
+  virtual std::string action_name()    = 0; // return the action name
+  virtual std::string LogParameters()  = 0; // prints action parameters
   virtual ~Action(){}
+
+  ///////////////////////////////
+  // Opt-in link interface
+  ///////////////////////////////
+  /**
+   * @brief Requests action evaluation through the configuration container's LinkMap
+   * @details
+   * An adopting action activates this path for subsequent configuration-based
+   * refresh, S, Sinitial, and deriv calls. Explicit bindings remain in effect;
+   * operators without an explicit binding use the map's documented defaults.
+   * The configuration must provide a map and a supported default for each such
+   * operator. The is_smeared flag does not select inputs on this path.
+   *
+   * This is a setup operation; field resolution and import occur during action
+   * evaluation. Derived actions supply the activation and evaluation machinery.
+   * The base implementation rejects unsupported actions through GRID_ASSERT.
+   */
+  virtual void useLinkMap() 
+  { GRID_ASSERT(0 && "Action subclass does not support opt-in link interface"); }
+
+  /**
+   * @brief Associates an operator's input ports with configuration output handles
+   * @details
+   * The identity is the const void* returned by that operator's linkIdentity(),
+   * identifying its canonical FermionOperator base subobject. It is compared
+   * with this action's borrowed operators and is never dereferenced. The binding is
+   * a nonempty sequence of handles in the argument order of the intended ordinary
+   * ImportGauge overload. Repeated handles are allowed; their input ports remain
+   * distinct. At evaluation, every handle must belong to the configuration's map.
+   *
+   * An adopting action retains the selection, replacing any previous binding for
+   * that operator, and activates map-based evaluation. Explicit bindings take
+   * precedence over defaults; other operators continue to use their own bindings
+   * or the map's defaults. Selection does not import fields or transfer ownership
+   * of the operator or configuration. Both must remain alive and their identities
+   * stable while the selection is in use.
+   *
+   * Derived actions supply selection storage and validation. The base
+   * implementation rejects unsupported actions through GRID_ASSERT.
+   */
+  virtual void bindLinks(const void*, const LinkBinding<GaugeField>&)
+  { GRID_ASSERT(0 && "Action subclass does not support opt-in link interface"); }
+
+  /**
+   * @brief Binds an operator's inputs using its canonical link identity
+   * @details
+   * Obtains op.linkIdentity() and forwards to the virtual identity-based overload,
+   * so the derived action still handles the selection. The member template itself
+   * is non-virtual. Derived actions overriding bindLinks should publicly expose
+   * this convenience overload with:
+   * @code
+   * using Action<GaugeField>::bindLinks;
+   * @endcode
+   */
+  template <class Operator>
+  void bindLinks(Operator& op, const LinkBinding<GaugeField>& binding) 
+  { bindLinks(op.linkIdentity(), binding); }
 };
 
 template <class GaugeField >
@@ -149,8 +226,6 @@ class EmptyAction : public Action <GaugeField>
   virtual std::string action_name()    { return std::string("Level Force Log"); };
   virtual std::string LogParameters()  { return std::string("No parameters");};
 };
-
-
 
 NAMESPACE_END(Grid);
 

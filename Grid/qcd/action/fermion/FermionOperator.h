@@ -10,6 +10,7 @@ Author: Peter Boyle <pabobyle@ph.ed.ac.uk>
 Author: Peter Boyle <paboyle@ph.ed.ac.uk>
 Author: Peter Boyle <peterboyle@Peters-MacBook-Pro-2.local>
 Author: Vera Guelpers <V.M.Guelpers@soton.ac.uk>
+Author: Curtis Taylor Peterson <curtistaylorpetersonwork@gmail.com>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -189,7 +190,111 @@ public:
       {
 	exported=solution;
       };
+  
+  ///////////////////////////////
+  // Opt-in link interface (HMC)
+  ///////////////////////////////
+  /**
+   * @brief Returns the canonical FermionOperator base-subobject address
+   * @details
+   * Used only as a borrowed identity for virtual action selection. Calls through
+   * base and derived references return the same address, including with multiple
+   * inheritance. The pointer is compared, never dereferenced; the operator must
+   * remain alive at the same address while a binding uses it.
+   */
+  const void* linkIdentity() const { return this; }
+
+  /**
+   * @brief Imports an ordered sequence through the ordinary ImportGauge interface
+   * @details
+   * The base accepts one input and forwards to the ordinary single-field virtual
+   * by default. Operators supporting additional inputs override this method and 
+   * forward to the ordinary overload matching the input count and order.
+   */
+  virtual void ImportGauge(const LinkInputs<GaugeField>& inputs) {
+    if (!(inputs.size() == 1)) { GRID_ASSERT(0 && "expected single port"); }
+    ImportGauge(inputs[0]);
+  }
+
+  /**
+   * @brief Writes complete Wirtinger derivatives of the hopping term
+   * @details
+   * Calculates Wirtinger derivative(s) of hopping term. Number of calculated 
+   * derivatives corresonds to number of input ports specified by the contract
+   * that LinkMap establishes and the maximum number of ports that the operator
+   * actually supports. 
+   */
+  virtual void DhopDeriv(
+    LinkDerivatives<GaugeField>&,
+    const LinkInputs<GaugeField>&,
+    const FermionField&,
+    const FermionField&,
+    int
+  ) { GRID_ASSERT(0 && "link interface DhopDeriv not implemented"); }
+
+  /** @brief Writes raw hopping derivatives for the even-to-odd block */
+  virtual void DhopDerivOE(
+    LinkDerivatives<GaugeField>&,
+    const LinkInputs<GaugeField>&,
+    const FermionField&,
+    const FermionField&,
+    int
+  ) { GRID_ASSERT(0 && "link interface DhopDerivOE not implemented"); }
+
+  /** @brief Writes raw hopping derivatives for the odd-to-even block */
+  virtual void DhopDerivEO(
+    LinkDerivatives<GaugeField>&,
+    const LinkInputs<GaugeField>&,
+    const FermionField&,
+    const FermionField&,
+    int
+  ) { GRID_ASSERT(0 && "link interface DhopDerivEO not implemented"); }
+
+  /** @brief Defaults to DhopDeriv; override for additional operator dependence */
+  virtual void MDeriv(
+    LinkDerivatives<GaugeField>& derivatives,
+    const LinkInputs<GaugeField>& links,
+    const FermionField& left,
+    const FermionField& right,
+    int dag
+  ) { DhopDeriv(derivatives, links, left, right, dag); }
+
+  /** @brief Defaults to DhopDerivOE; override for a different off-diagonal block */
+  virtual void MoeDeriv(
+    LinkDerivatives<GaugeField>& derivatives,
+    const LinkInputs<GaugeField>& links,
+    const FermionField& left,
+    const FermionField& right,
+    int dag
+  ) { DhopDerivOE(derivatives, links, left, right, dag); }
+
+  /** @brief Defaults to DhopDerivEO; override for a different off-diagonal block */
+  virtual void MeoDeriv(
+    LinkDerivatives<GaugeField>& derivatives,
+    const LinkInputs<GaugeField>& links,
+    const FermionField& left,
+    const FermionField& right,
+    int dag
+  ) { DhopDerivEO(derivatives, links, left, right, dag); }
+
+  /** @brief Writes raw derivatives of the odd diagonal block */
+  virtual void MooDeriv( // a cow's favorite derivative
+    LinkDerivatives<GaugeField>&,
+    const LinkInputs<GaugeField>&,
+    const FermionField&,
+    const FermionField&,
+    int
+  ) { GRID_ASSERT(0 && "link interface MooDeriv not implemented"); }
+
+  /** @brief Writes raw derivatives of the even diagonal block */
+  virtual void MeeDeriv(
+    LinkDerivatives<GaugeField>&,
+    const LinkInputs<GaugeField>&,
+    const FermionField&,
+    const FermionField&,
+    int
+  ) { GRID_ASSERT(0 && "link interface MeeDeriv not implemented"); }
+
 };
 
 NAMESPACE_END(Grid);
-

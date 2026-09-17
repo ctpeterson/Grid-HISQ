@@ -96,14 +96,10 @@ private:
 
   RealD _action() {
     FermionField Psi(FermOp.FermionRedBlackGrid());
-    FermionField Chi(FermOp.FermionRedBlackGrid());
     SchurStaggeredOperator<FermionOperator<Impl>, FermionField> MdagMOp(FermOp);
-    RealD mass2 = FermOp.Mass()*FermOp.Mass();
-
     Psi = Zero();
     ActionSolver(MdagMOp, Phi, Psi);
-    FermOp.Meooe(Psi, Chi);
-    return mass2*norm2(Psi) + norm2(Chi);
+    return innerProduct(Phi, Psi).real();
   }
 
   void _deriv(GaugeField& dSdU) {

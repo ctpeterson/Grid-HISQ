@@ -32,6 +32,8 @@ directory
 // Rational functions
 #include <Grid/qcd/action/pseudofermion/Bounds.h>
 
+#include <Grid/qcd/action/pseudofermion/LinkCoordinator.h>
+NAMESPACE_CHECK(LinkCoordinator);
 #include <Grid/qcd/action/pseudofermion/EvenOddSchurDifferentiable.h>
 #include <Grid/qcd/action/pseudofermion/TwoFlavour.h>
 #include <Grid/qcd/action/pseudofermion/TwoFlavourRatio.h>

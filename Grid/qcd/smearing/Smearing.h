@@ -5,5 +5,3 @@
 #include <Grid/qcd/smearing/StoutSmearing.h>
 #include <Grid/qcd/smearing/GaugeConfiguration.h>
 #include <Grid/qcd/smearing/WilsonFlow.h>
-#include <Grid/qcd/smearing/HISQConfiguration.h>
-
