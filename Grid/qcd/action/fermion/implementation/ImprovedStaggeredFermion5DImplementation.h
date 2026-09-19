@@ -187,7 +187,7 @@ void ImprovedStaggeredFermion5D<Impl>::ImportGauge(const GaugeField &_Uthin,cons
   ////////////////////////////////////////////////////////
   // Double Store should take two fields for Naik and one hop separately.
   ////////////////////////////////////////////////////////
-  Impl::DoubleStore(GaugeGrid(), UUUmu, Umu, _Uthin, _Ufat );
+  Impl::ImprovedDoubleStore(GaugeGrid(), UUUmu, Umu, _Uthin, _Ufat );
 
   ////////////////////////////////////////////////////////
   // Apply scale factors to get the right fermion Kinetic term
@@ -485,6 +485,5 @@ void ImprovedStaggeredFermion5D<Impl>::SeqConservedCurrent(PropagatorField &q_in
 }
   
 NAMESPACE_END(Grid);
-
 
 

@@ -55,10 +55,26 @@ template<class Impl> class StaggeredKernels : public FermionOperator<Impl> , pub
   void DhopNaive(StencilImpl &st,
 		 DoubledGaugeField &U,
 		 const FermionField &in, FermionField &out, int dag, int interior,int exterior);
-  
+
+  template <int Naik, class _Gauge>
+  void DhopDirForward(StencilImpl &st, const _Gauge &U,
+                      const FermionField &in, FermionField &out, int dir);
+  template <int Naik, class _Gauge> static accelerator_inline
+  void DhopDirForwardKernelXp(StencilView& st, const LatticeView<_Gauge>& U,
+    SiteSpinor* buf, const FermionFieldView& in, FermionFieldView& out, int sF, int sU);
+  template <int Naik, class _Gauge> static accelerator_inline
+  void DhopDirForwardKernelYp(StencilView& st, const LatticeView<_Gauge>& U,
+    SiteSpinor* buf, const FermionFieldView& in, FermionFieldView& out, int sF, int sU);
+  template <int Naik, class _Gauge> static accelerator_inline
+  void DhopDirForwardKernelZp(StencilView& st, const LatticeView<_Gauge>& U,
+    SiteSpinor* buf, const FermionFieldView& in, FermionFieldView& out, int sF, int sU);
+  template <int Naik, class _Gauge> static accelerator_inline
+  void DhopDirForwardKernelTp(StencilView& st, const LatticeView<_Gauge>& U,
+    SiteSpinor* buf, const FermionFieldView& in, FermionFieldView& out, int sF, int sU);
+
+  // forward-only Dhop kernels for derivative computations
   void DhopDir(StencilImpl &st, DoubledGaugeField &U, DoubledGaugeField &UUU,
               const FermionField &in, FermionField &out, int dir, int disp, int naik);
-  
   template <int Naik> static accelerator_inline
   void DhopDirKernelXp(StencilView& st, DoubledGaugeFieldView& U, DoubledGaugeFieldView& UUU, 
                       SiteSpinor* buf, const FermionFieldView& in, FermionFieldView& out, int sF, int sU);
@@ -71,7 +87,6 @@ template<class Impl> class StaggeredKernels : public FermionOperator<Impl> , pub
   template <int Naik> static accelerator_inline
   void DhopDirKernelTp(StencilView& st, DoubledGaugeFieldView& U, DoubledGaugeFieldView& UUU, 
                       SiteSpinor* buf, const FermionFieldView& in, FermionFieldView& out, int sF, int sU);
-  
 
  protected:    
 

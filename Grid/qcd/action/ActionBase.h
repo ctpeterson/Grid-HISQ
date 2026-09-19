@@ -207,6 +207,12 @@ public:
   template <class Operator>
   void bindLinks(Operator& op, const LinkBinding<GaugeField>& binding) 
   { bindLinks(op.linkIdentity(), binding); }
+
+  /** @brief convenience overload for inferring binding to internal operators */
+  template <class Operator>
+  void bindLinks(const LinkBinding<GaugeField>& binding) 
+  { GRID_ASSERT(0 && "Action subclass does not provide automatic link binding"); }
+  
 };
 
 template <class GaugeField >

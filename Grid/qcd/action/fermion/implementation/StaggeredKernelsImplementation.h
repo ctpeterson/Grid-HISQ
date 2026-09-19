@@ -249,6 +249,9 @@ void StaggeredKernels<Impl>::DhopDirKernel(
 }
 */
 
+/*
+// deferred: should be properly implemented now that DhopDir is not tied to the
+// derivative calculation --- still useful for multigrid
 #define DhopDirMacro(Dir)                                              \
   template <class Impl>                                                \
   template <int Naik> accelerator_inline                               \
@@ -330,6 +333,82 @@ void StaggeredKernels<Impl>::DhopDir(
     LoopBody(Zp);
     LoopBody(Tp);
     default: GRID_ASSERT(0 && "Invalid direction in DhopDir"); break;
+  }
+
+#undef LoopBody
+}
+*/
+
+#define DhopDirForwardMacro(Dir)                          \
+  template <class Impl>                                   \
+  template <int Naik, class _Gauge> accelerator_inline    \
+  void StaggeredKernels<Impl>::DhopDirForwardKernel##Dir( \
+    StencilView& st,                                      \
+    const LatticeView<_Gauge>& U,                         \
+    SiteSpinor* buf,                                      \
+    const FermionFieldView& in,                           \
+    FermionFieldView& out,                                \
+    int sF,                                               \
+    int sU                                                \
+  ) {                                                     \
+    typedef decltype(coalescedRead(in[0])) calcSpinor;    \
+    const int Nsimd = SiteHalfSpinor::Nsimd();            \
+    const int lane = acceleratorSIMTlane(Nsimd);          \
+    int ptype;                                            \
+    int skew = Naik ? 8 : 0;                              \
+    calcSpinor chi, Uchi;                                 \
+    StencilEntry* SE;                                     \
+    GENERIC_STENCIL_LEG(U, Dir, skew, Impl::multLink);    \
+    coalescedWrite(out[sF], Uchi, lane);                  \
+  }
+
+DhopDirForwardMacro(Xp);
+DhopDirForwardMacro(Yp);
+DhopDirForwardMacro(Zp);
+DhopDirForwardMacro(Tp);
+
+#undef DhopDirForwardMacro
+
+template <class Impl>
+template <int Naik, class _Gauge>
+void StaggeredKernels<Impl>::DhopDirForward(
+  StencilImpl& st,
+  const _Gauge& U,
+  const FermionField& in,
+  FermionField& out,
+  int dir
+) {
+  GridBase* FermionGrid = in.Grid();
+  GridBase* GaugeGrid = U.Grid();
+
+  int Ls = 1;
+  int Nsite = GaugeGrid->oSites();
+  
+  SiteSpinor* buf = st.CommBuf();
+
+  out.Checkerboard() = U.Checkerboard();
+  if (FermionGrid->Nd() == GaugeGrid->Nd() + 1) { Ls = FermionGrid->_rdimensions[0]; }
+
+  autoView(stv, st, AcceleratorRead);
+  autoView(Uv, U, AcceleratorRead);
+  autoView(inv, in, AcceleratorRead);
+  autoView(outv, out, AcceleratorWrite);
+
+#define LoopBody(Dir)                                                                 \
+  case Dir:                                                                           \
+    accelerator_for(ss, Nsite*Ls, Simd::Nsimd(), {                                    \
+      int sF = ss;                                                                    \
+      int sU = ss / Ls;                                                               \
+      DhopDirForwardKernel##Dir<Naik>(stv, Uv, buf, inv, outv, sF, sU);               \
+    });                                                                               \
+    break;
+
+  switch (dir) {
+    LoopBody(Xp);
+    LoopBody(Yp);
+    LoopBody(Zp);
+    LoopBody(Tp);
+    default: GRID_ASSERT(0 && "invalid direction in DhopDirForward"); break;
   }
 
 #undef LoopBody

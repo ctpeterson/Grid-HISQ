@@ -254,28 +254,28 @@ public:
   virtual void MDeriv(
     LinkDerivatives<GaugeField>& derivatives,
     const LinkInputs<GaugeField>& links,
-    const FermionField& left,
     const FermionField& right,
+    const FermionField& left,
     int dag
-  ) { DhopDeriv(derivatives, links, left, right, dag); }
+  ) { DhopDeriv(derivatives, links, right, left, dag); }
 
   /** @brief Defaults to DhopDerivOE; override for a different off-diagonal block */
   virtual void MoeDeriv(
     LinkDerivatives<GaugeField>& derivatives,
     const LinkInputs<GaugeField>& links,
-    const FermionField& left,
     const FermionField& right,
+    const FermionField& left,
     int dag
-  ) { DhopDerivOE(derivatives, links, left, right, dag); }
+  ) { DhopDerivOE(derivatives, links, right, left, dag); }
 
   /** @brief Defaults to DhopDerivEO; override for a different off-diagonal block */
   virtual void MeoDeriv(
     LinkDerivatives<GaugeField>& derivatives,
     const LinkInputs<GaugeField>& links,
-    const FermionField& left,
     const FermionField& right,
+    const FermionField& left,
     int dag
-  ) { DhopDerivEO(derivatives, links, left, right, dag); }
+  ) { DhopDerivEO(derivatives, links, right, left, dag); }
 
   /** @brief Writes raw derivatives of the odd diagonal block */
   virtual void MooDeriv( // a cow's favorite derivative

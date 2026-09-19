@@ -53,6 +53,11 @@ directory
  * by the fundamental links belongs to force assembly, and projection onto the
  * momentum Lie algebra belongs to the integrator. Neither operation is performed
  * by the types in this header.
+ * 
+ * the geometry of hybrid Monte Carlo
+ * ----------------------------------
+ * 
+ * !!!! TODO !!!!
  */
 
 #pragma once
@@ -97,6 +102,10 @@ public:
 public:
   std::size_t size() const { return _fields.size(); }
   const Field& operator[](std::size_t index) const { return *_fields.at(index); }
+
+public:
+  void conformable(GridBase* grid) const 
+  { for (auto field : _fields) { GRID_ASSERT(field->Grid() == grid); } }
 };
 
 template <class Field>
@@ -206,6 +215,68 @@ public:
   /** @brief scalar multiplication with the collection on the left */
   friend LinkDerivatives operator*(LinkDerivatives value, RealD weight) 
   { value *= weight; return value; }
+
+private:
+  template <class vobj>
+  static void validateIndexLayout(const Field& field, const Lattice<vobj>& value) {
+    GridBase* target = field.Grid();
+    GridBase* source = value.Grid();
+    
+    if (source->_isCheckerBoarded) 
+    { GRID_ASSERT(value.Checkerboard() == Even || value.Checkerboard() == Odd); }
+    if (target == source) { conformable(field, value); return; }
+    
+    GRID_ASSERT(!target->_isCheckerBoarded && source->_isCheckerBoarded);
+    GRID_ASSERT(target->_fdimensions == source->_fdimensions);
+    GRID_ASSERT(target->_processors == source->_processors);
+    GRID_ASSERT(target->_processor_coor == source->_processor_coor);
+    GRID_ASSERT(target->_simd_layout == source->_simd_layout);
+  }
+
+public:
+  /**
+   * @brief Overwrite a tensor component at the sites represented by value
+   * @details
+   * Index is Grid's tensor index (for example LorentzIndex), idx selects its
+   * component, and port selects the input derivative. The source must use the
+   * destination grid or a compatible red-black grid. Its Checkerboard() selects
+   * the sites to update; the opposite parity and other components are preserved.
+   * The destination retains its grid and checkerboard metadata.
+   */
+  template <int Index, class vobj>
+  void pokeIndex(const Lattice<vobj>& value, int idx, std::size_t port) {
+    Field& field = _fields.at(port);
+    
+    validateIndexLayout(field, value);
+    
+    if (field.Grid() == value.Grid()) { PokeIndex<Index>(field, value, idx); } 
+    else {
+      auto component = PeekIndex<Index>(field, idx);
+      acceleratorSetCheckerboard(component, value, value.Grid()->_checker_dim);
+      PokeIndex<Index>(field, component, idx);
+    }
+  }
+
+  /** @brief Add a tensor component, with the same site selection as pokeIndex */
+  template <int Index, class vobj>
+  void addIndex(const Lattice<vobj>& value, int idx, std::size_t port) {
+    Field& field = _fields.at(port);
+    auto component = PeekIndex<Index>(field, idx);
+
+    validateIndexLayout(field, value);
+    
+    if (field.Grid() != value.Grid()) {
+      Lattice<vobj> partial(value.Grid());
+      int cb = value.Checkerboard();
+      int dim = value.Grid()->_checker_dim;
+
+      acceleratorPickCheckerboard(cb, partial, component, dim);
+      component = std::move(partial);
+    }
+    
+    component += value;
+    pokeIndex<Index>(component, idx, port);
+  }
 };
 
 template <class Field>

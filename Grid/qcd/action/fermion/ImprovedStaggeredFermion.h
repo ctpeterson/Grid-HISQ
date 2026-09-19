@@ -2,11 +2,11 @@
 
 Grid physics library, www.github.com/paboyle/Grid
 
-Source file: ./lib/qcd/action/fermion/ImprovedStaggered.h
+Source file: ./lib/qcd/action/fermion/ImprovedStaggeredFermion.h
 
 Copyright (C) 2015
 
-Author: Azusa Yamaguchi, Peter Boyle
+Author: Azusa Yamaguchi, Peter Boyle, Curtis Taylor Peterson
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -83,6 +83,14 @@ public:
   void DhopDerivOE(GaugeField &mat, const FermionField &U, const FermionField &V, int dag);
   void DhopDerivEO(GaugeField &mat, const FermionField &U, const FermionField &V, int dag);
 
+  ///////////////////////////////////
+  // New opt-in derivative interface
+  ///////////////////////////////////
+  void DhopDeriv(LinkDerivatives<GaugeField>&, const LinkInputs<GaugeField>&, const FermionField&, const FermionField&, int);
+  void DhopDerivOE(LinkDerivatives<GaugeField>&, const LinkInputs<GaugeField>&, const FermionField&, const FermionField&, int);
+  void DhopDerivEO(LinkDerivatives<GaugeField>&, const LinkInputs<GaugeField>&, const FermionField&, const FermionField&, int);
+  void DerivInternal(StencilImpl&, LinkDerivatives<GaugeField>&, const LinkInputs<GaugeField>&, const DoubledGaugeField&, const DoubledGaugeField&, const FermionField&, const FermionField&, int);
+
   ///////////////////////////////////////////////////////////////
   // non-hermitian hopping term; half cb or both
   ///////////////////////////////////////////////////////////////
@@ -128,10 +136,11 @@ public:
 			   const ImplParams &p = ImplParams());
 
   // DoubleStore impl dependent
-  void ImportGauge      (const GaugeField &_Uthin ) { GRID_ASSERT(0); }
+  void ImportGauge(const GaugeField &U) { ImportGauge(U, U); }
   void ImportGauge(const GaugeField &_Uthin, const GaugeField &_Ufat);
   void ImportGaugeSimple(const GaugeField &_UUU    ,const GaugeField &_U);
   void ImportGaugeSimple(const DoubledGaugeField &_UUU,const DoubledGaugeField &_U);
+  void ImportGauge(const LinkInputs<GaugeField>& inputs);
   DoubledGaugeField &GetU(void)   { return Umu ; } ;
   DoubledGaugeField &GetUUU(void) { return UUUmu; };
   void CopyGaugeCheckerboards(void);

@@ -2,11 +2,11 @@
 
 Grid physics library, www.github.com/paboyle/Grid
 
-Source file: ./lib/qcd/action/fermion/ImprovedStaggeredFermion.cc
+Source file: ./lib/qcd/action/fermion/NaiveStaggeredFermion.cc
 
 Copyright (C) 2015
 
-Author: Azusa Yamaguchi, Peter Boyle
+Author: Azusa Yamaguchi, Peter Boyle, Curtis Taylor Peterson
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -114,29 +114,16 @@ void NaiveStaggeredFermion<Impl>::ImportGauge(const GaugeField &Uin)
   ////////////////////////////////
   // Dirichlet boundary conditions
   ////////////////////////////////
-  if (Dirichlet) {
-    std::cout << GridLogMessage << " FULL Dirichlet BCs " << Block << std::endl; 
-
-    std::cout << GridLogMessage << " Checking block size multiple of rank boundaries for Dirichlet " << std::endl;
-    for (int mu = 0; mu < Nd; ++mu) {
-      int GaugeBlock = Block[mu];
-      int ldim = GaugeGrid()->LocalDimensions()[mu];
-      if (GaugeBlock) { GRID_ASSERT((GaugeBlock % ldim) == 0); }
-    }
-
-    // apply Dirichlet filter to input gauge field
-    std::cout << " Dirichlet filtering gauge field BCs block " << Block << std::endl;
-    Coordinate GaugeBlock(Nd);
-    for (int mu = 0; mu < Nd; ++mu) { GaugeBlock[mu] = Block[mu]; }
-    DirichletFilter<GaugeField> Filter(GaugeBlock);
-    Filter.applyFilter(_U);
+  if (Dirichlet) { 
+    this->validateDirichletBlock(GaugeGrid(), Block); 
+    this->applyDirichletMasks(_U, Block);
   }
 
   ////////////////////////////////////////////////////////
   // Double Store should take two fields for Naik and one hop separately.
   // Discard teh Naik as Naive
   ////////////////////////////////////////////////////////
-  Impl::DoubleStore(GaugeGrid(), _UUU, Umu, _U, _U );
+  Impl::NaiveDoubleStore(GaugeGrid(), Umu, _U);
 
   ////////////////////////////////////////////////////////
   // Apply scale factors to get the right fermion Kinetic term
@@ -155,6 +142,14 @@ void NaiveStaggeredFermion<Impl>::ImportGauge(const GaugeField &Uin)
 
   CopyGaugeCheckerboards();
 }
+
+template <class Impl>
+void NaiveStaggeredFermion<Impl>::ImportGauge(const LinkInputs<GaugeField>& in) {
+  in.conformable(_grid);
+  if (in.size() == 1) { ImportGauge(in[0]); } 
+  else { GRID_ASSERT(0 && "invalid port count"); }
+}
+
 
 /////////////////////////////
 // Implement the interface
@@ -223,31 +218,114 @@ void NaiveStaggeredFermion<Impl>::MooeeInvDag(const FermionField &in, FermionFie
 
 template <class Impl>
 void NaiveStaggeredFermion<Impl>::DerivInternal(
-  StencilImpl &st, 
-  DoubledGaugeField &U,
-	GaugeField &mat,
-	const FermionField &A, 
-  const FermionField &B, 
+  StencilImpl& st, 
+  DoubledGaugeField& U,
+	GaugeField& mat,
+	const FermionField& A, 
+  const FermionField& B, 
   int dag
 ) {
   /**
-   * @brief naive staggered fermion derivative
+   * @brief Unprojected left-trivialized derivative of kinetic fermion bilinears
    * @author Curtis Taylor Peterson
+   * @details See the DerivInternal overload w/ LinkDerivatives and LinkInputs below
    */
   GRID_ASSERT((dag == DaggerNo) || (dag == DaggerYes));
 
-  Compressor compressor;
   FermionField Btilde(B.Grid());
   FermionField Atilde = A;
+
+  Compressor compressor;
 
   st.HaloExchange(B, compressor);
 
   for (int mu = 0; mu < Nd; ++mu) {
-    Kernels::DhopDir(st, U, U, B, Btilde, mu, 1, 0);
+    Kernels::template DhopDirForward<0>(st, U, B, Btilde, mu);
     pokeLorentz(mat, outerProduct(Btilde, Atilde), mu);
   }
 
   if (dag) { mat = -mat; }
+}
+
+template <class Impl>
+void NaiveStaggeredFermion<Impl>::DerivInternal(
+  StencilImpl& stencil,
+  LinkDerivatives<GaugeField>& derivs, 
+  const LinkInputs<GaugeField>& links, 
+  const DoubledGaugeField& U, // never used for computation
+  const FermionField& left, 
+  const FermionField& right, 
+  int dag
+) {
+  /**
+   * @brief Forward Wirtinger derivative of kinetic fermion bilinears
+   * @author Curtis Taylor Peterson
+   * @details
+   * This method calculates the forward Wirtinger derivative of fermion bilinears
+   * (1) phi_{left}^dag M(m) phi_{right}
+   * with m the bare fermion mass and
+   * (2) M(m) = k1 D + m,
+   * where k1 is the prefactor multiplying the massless naive staggered fermion operator. 
+   * Recalling that the full pulled back force is schematically of the form
+   * (3) F = project_{Lie algebra}(-U dS/dU),
+   * what is meant by the "forward Wirtinger derivative" is the dS/dU factor, which is a
+   * matrix derivative with respect to the forward links, each component of which is an
+   * ordinary Wirtinger derivative. The Wirtinger derivative is eventually pulled back to 
+   * the fundamental gauge field U outside of this class.
+   *
+   * link properties
+   * ---------------
+   *
+   * The links entering the one-hop term may be non-unitary. This does not mean that
+   * them being unitary will break anything. In practice, this doesn't actually matter
+   * (see below), but it is the reason why the opt-in interface works with Wirtinger
+   * derivatives as opposed to unprojected left-trivialized derivatives, which require
+   * removing the link factor to recover the raw derivative for the chain rule.
+   *
+   * derivative
+   * ----------
+   *
+   * The Wirtinger derivative with respect to the one-hop links is of the form
+   * (4) d_{mu}(n) = k1 m_{mu}(n) phi_{right}(n + mu) phi_{left}^dag(n),
+   * where m_{mu}(n) contains the staggered phases, global boundary phases (which
+   * take care of the periodic/anti-periodic boundary conditions), and possible Dirichlet
+   * masks (which take care of Dirichlet boundary conditions).
+   *
+   * derivative of conjugate operator
+   * --------------------------------
+   *
+   * One has
+   * (5) M^dag(m) = -M(-m)
+   * for staggered Dirac operators. As such, the forward derivative of M^dag can be
+   * obtained from the forward derivative of M by multiplying by -1 (the derivative
+   * knocks out the constant mass term).
+   */
+  GRID_ASSERT(dag == DaggerNo || dag == DaggerYes);
+
+  GridBase* GaugeGrid = U.Grid();
+  GridBase* FermionGrid = left.Grid();
+  
+  GaugeField X(GaugeGrid);
+  FermionField leftTilde(FermionGrid);
+  FermionField rightTilde = right;
+
+  Compressor compressor;
+
+  stencil.HaloExchange(right, compressor);
+
+  X.Checkerboard() = U.Checkerboard();
+  X = 0.5*c1/u0;
+  this->rephase(_grid, X);
+
+  // Wirtinger derivative; Eqn (4)
+  for (int mu = 0; mu < Nd; ++mu) {
+    Kernels::template DhopDirForward<0>(stencil, X, right, rightTilde, mu);
+    derivs.template pokeIndex<LorentzIndex>(outerProduct(rightTilde, left), mu, 0);
+  }
+
+  // finish off by applying Dirichlet masks and daggering if requested
+  if (Dirichlet) { this->applyDirichletMasks(derivs[0], Block); }
+  if (dag == DaggerYes) { derivs *= -1; }
 }
 
 template <class Impl>
@@ -267,6 +345,22 @@ void NaiveStaggeredFermion<Impl>::DhopDeriv(
 }
 
 template <class Impl>
+void NaiveStaggeredFermion<Impl>::DhopDeriv(
+  LinkDerivatives<GaugeField>& derivs,
+  const LinkInputs<GaugeField>& links,
+  const FermionField& left,
+  const FermionField& right,
+  int dag
+) {
+  conformable(left.Grid(), _grid);
+  conformable(left.Grid(), right.Grid());
+  links.conformable(_grid);
+
+  derivs = LinkDerivatives<GaugeField>::fromInputs(links);
+  DerivInternal(Stencil, derivs, links, Umu, left, right, dag);
+}
+
+template <class Impl>
 void NaiveStaggeredFermion<Impl>::DhopDerivOE(GaugeField &mat, const FermionField &U, const FermionField &V, int dag) {
 
   conformable(U.Grid(), _cbgrid);
@@ -281,6 +375,25 @@ void NaiveStaggeredFermion<Impl>::DhopDerivOE(GaugeField &mat, const FermionFiel
 }
 
 template <class Impl>
+void NaiveStaggeredFermion<Impl>::DhopDerivOE(
+  LinkDerivatives<GaugeField>& derivs,
+  const LinkInputs<GaugeField>& links,
+  const FermionField& left,
+  const FermionField& right,
+  int dag
+) {
+  GRID_ASSERT(left.Checkerboard() == Odd);
+  GRID_ASSERT(right.Checkerboard() == Even);
+
+  conformable(left.Grid(), _cbgrid);
+  conformable(left.Grid(), right.Grid());
+  links.conformable(_grid);
+
+  derivs = LinkDerivatives<GaugeField>::fromInputs(links);
+  DerivInternal(StencilEven, derivs, links, UmuOdd, left, right, dag);
+} 
+
+template <class Impl>
 void NaiveStaggeredFermion<Impl>::DhopDerivEO(GaugeField &mat, const FermionField &U, const FermionField &V, int dag) {
 
   conformable(U.Grid(), _cbgrid);
@@ -293,6 +406,25 @@ void NaiveStaggeredFermion<Impl>::DhopDerivEO(GaugeField &mat, const FermionFiel
 
   DerivInternal(StencilOdd, UmuEven, mat, U, V, dag);
 }
+
+template <class Impl>
+void NaiveStaggeredFermion<Impl>::DhopDerivEO(
+  LinkDerivatives<GaugeField>& derivs,
+  const LinkInputs<GaugeField>& links,
+  const FermionField& left,
+  const FermionField& right,
+  int dag
+) {
+  GRID_ASSERT(left.Checkerboard() == Even);
+  GRID_ASSERT(right.Checkerboard() == Odd);
+
+  conformable(left.Grid(), _cbgrid);
+  conformable(left.Grid(), right.Grid());
+  links.conformable(_grid);
+
+  derivs = LinkDerivatives<GaugeField>::fromInputs(links);
+  DerivInternal(StencilOdd, derivs, links, UmuEven, left, right, dag);
+} 
 
 template <class Impl>
 void NaiveStaggeredFermion<Impl>::Dhop(const FermionField &in, FermionField &out, int dag) 

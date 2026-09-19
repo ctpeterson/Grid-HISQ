@@ -6,7 +6,7 @@ Source file: ./lib/qcd/action/fermion/ImprovedStaggeredFermion.cc
 
 Copyright (C) 2015
 
-Author: Azusa Yamaguchi, Peter Boyle
+Author: Azusa Yamaguchi, Peter Boyle, Curtis Taylor Peterson
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -57,6 +57,8 @@ ImprovedStaggeredFermion<Impl>::ImprovedStaggeredFermion(GridCartesian &Fgrid, G
     _tmp(&Hgrid),
     Dirichlet(0)
 {
+  GRID_ASSERT(_u0 != 0);
+
   int vol4;
   int LLs=1;
   c1=_c1;
@@ -73,7 +75,10 @@ ImprovedStaggeredFermion<Impl>::ImprovedStaggeredFermion(GridCartesian &Fgrid, G
     Coordinate block = p.dirichlet;
     if (block[0] or block[1] or block[2] or block[3]) {
       GRID_ASSERT(p.partialDirichlet == 0);
-      std::cout << GridLogMessage << " ImprovedStaggeredFermion: non-trivial Dirichlet boundary condition " << block << std::endl;
+      std::cout << GridLogMessage 
+                << " non-trivial Dirichlet boundary condition " 
+                << block 
+                << std::endl;
       Coordinate block = p.dirichlet;
       Dirichlet = 1;
       Block = block;
@@ -141,8 +146,10 @@ void ImprovedStaggeredFermion<Impl>::CopyGaugeCheckerboards(void)
 }
 
 template <class Impl>
-void ImprovedStaggeredFermion<Impl>::ImportGauge(const GaugeField &_Ut, const GaugeField &_Uf) 
-{
+void ImprovedStaggeredFermion<Impl>::ImportGauge(
+  const GaugeField& _Ut, // three-hop port  <-+- ordering confusing for user
+  const GaugeField& _Uf  // one-hop port    <-+
+) {
   GaugeField _Uthin = _Ut;
   GaugeField _Ufat  = _Uf;
   GaugeLinkField U(GaugeGrid());
@@ -151,27 +158,20 @@ void ImprovedStaggeredFermion<Impl>::ImportGauge(const GaugeField &_Ut, const Ga
   // Dirichlet boundary conditions
   ////////////////////////////////
   if (Dirichlet) {
-    std::cout << GridLogMessage << " FULL Dirichlet BCs " << Block << std::endl;
-    
-    std::cout << GridLogMessage << " Checking block size multiple of rank boundaries for Dirichlet " << std::endl;
-    for (int mu = 0; mu < Nd; ++mu) {
-      int GaugeBlock = Block[mu];
-      int ldim = GaugeGrid()->LocalDimensions()[mu];
-      if (GaugeBlock) { GRID_ASSERT((GaugeBlock % ldim) == 0); }
-    }
-
-    std::cout << " Dirichlet filtering gauge field BCs block " << Block << std::endl;
-    Coordinate GaugeBlock(Nd);
-    for (int mu = 0; mu < Nd; ++mu) { GaugeBlock[mu] = Block[mu]; }
-    DirichletFilter<GaugeField> ThinFilter(GaugeBlock), FatFilter(GaugeBlock, 3);
-    ThinFilter.applyFilter(_Uthin);
-    FatFilter.applyFilter(_Ufat);
+    // Note: due to how we've implemented the Dirichlet boundary conditions 
+    // (applying the Dirichlet mask to the input links, then using them to construct
+    // the sparse matrix representation of the "improved" staggered operator), the 
+    // depth of the zeroed-out region is one for the one-link ("fat") term and three
+    // for the three-link ("thin"/"Naik") term
+    this->validateDirichletBlock(GaugeGrid(), Block);
+    this->applyDirichletMasks(_Uthin, Block);
+    this->applyDirichletMasks(_Ufat, Block);
   }
 
   ////////////////////////////////////////////////////////
   // Double Store should take two fields for Naik and one hop separately.
   ////////////////////////////////////////////////////////
-  Impl::DoubleStore(GaugeGrid(), UUUmu, Umu, _Uthin, _Ufat);
+  Impl::ImprovedDoubleStore(GaugeGrid(), UUUmu, Umu, _Uthin, _Ufat);
 
   ////////////////////////////////////////////////////////
   // Apply scale factors to get the right fermion Kinetic term
@@ -193,6 +193,14 @@ void ImprovedStaggeredFermion<Impl>::ImportGauge(const GaugeField &_Ut, const Ga
   }
 
   CopyGaugeCheckerboards();
+}
+
+template <class Impl>
+void ImprovedStaggeredFermion<Impl>::ImportGauge(const LinkInputs<GaugeField>& in) {
+  in.conformable(_grid);
+  if (in.size() == 1) { ImportGauge(in[0]); } 
+  else if (in.size() == 2) { ImportGauge(in[0], in[1]); }
+  else { GRID_ASSERT(0 && "invalid port count"); }
 }
 
 /////////////////////////////
@@ -278,25 +286,232 @@ void ImprovedStaggeredFermion<Impl>::DerivInternal(
   int dag
 ) {
   /**
-   * @brief improved staggered fermion derivative
+   * @brief Unprojected left-trivialized derivative of kinetic fermion bilinears
    * @author Curtis Taylor Peterson
+   * @details
+   * This method calculates the unprojected left-trivialized derivative of the kinetic
+   * fermion bilinears directly from the doubled stores U and UUU, accumulating the
+   * one-hop and three-hop contributions in mat.
+   * 
+   * See the DerivInternal overload taking LinkDerivatives and LinkInputs for the
+   * shared notation and derivative conventions.
+   *
+   * link properties
+   * ---------------
+   *
+   * The legacy path has the following restrictions:
+   * - When the three-hop term is active, the elementary links entering both terms must
+   *   be the same unitary field. This method recovers W from the doubled one-hop store
+   *   U by removing its coefficient and phases. Recovering W requires c1 != 0 when 
+   *   c2 != 0.
+   * - The legacy DhopDerivEO and DhopDerivOE wrappers reject calls. A three-hop
+   *   derivative contributes to both link checkerboards, which their single
+   *   checkerboard output cannot represent. This implementation serves the full-grid
+   *   legacy derivative; the opt-in path handles checkerboarded fermion arguments.
    */
-  GRID_ASSERT((dag == DaggerNo) || (dag == DaggerYes));
+  GRID_ASSERT(dag == DaggerNo or dag == DaggerYes);
+  GRID_ASSERT((c1 != 0.0 or c2 == 0.0) && "need c1 != 0 or c2 == 0 to recover input links");
 
-  Compressor compressor;
+  mat = Zero();
+
+  GridBase* GaugeGrid = U.Grid();
   FermionField Btilde(B.Grid());
-  FermionField Atilde = A;
+  
+  Compressor compressor;
 
   st.HaloExchange(B, compressor);
 
-  for (int mu = 0; mu < Nd; ++mu) {
-    Kernels::DhopDir(st, U, U, B, Btilde, mu, 1, 0);
-    pokeLorentz(mat, outerProduct(Btilde, Atilde), mu);
+  if (c1 != 0.0) { // one-hop contribution; assumes unitary links
+    for (int mu = 0; mu < Nd; ++mu) {
+      Kernels::template DhopDirForward<0>(st, U, B, Btilde, mu);
+      pokeLorentz(mat, outerProduct(Btilde, A), mu);
+  } }
 
-    // ... blasted 3-hop... not implemented
+  if (c2 != 0.0) { // three-hop contribution; assumes unitary links
+    GaugeLinkField w(GaugeGrid), cmp(GaugeGrid), deriv3(GaugeGrid);
+    std::vector<ComplexField> eta(Nd, GaugeGrid);
+    std::vector<ComplexField> bcs(Nd, GaugeGrid);
+    
+    this->setStaggeredPhases(eta);
+    this->setBoundaryPhases(bcs);
+
+    for (int mu = 0; mu < Nd; ++mu) {
+      w = peekLorentz(U, mu) / (0.5*c1/u0*eta[mu]*bcs[mu]);
+
+      Kernels::template DhopDirForward<1>(st, UUU, B, Btilde, mu);
+      deriv3 = outerProduct(Btilde, A);
+
+      cmp = Cshift(adj(w)*deriv3*w, mu, -1);
+      deriv3 += cmp;
+
+      cmp = Cshift(adj(w)*cmp*w, mu, -1);
+      deriv3 += cmp;
+
+      pokeLorentz(mat, peekLorentz(mat, mu) + deriv3, mu);
+  } }
+
+  if (dag == DaggerYes) { mat = -mat; }
+}
+
+template <class Impl>
+void ImprovedStaggeredFermion<Impl>::DerivInternal(
+  StencilImpl& stencil,
+  LinkDerivatives<GaugeField>& derivs, 
+  const LinkInputs<GaugeField>& links, 
+  const DoubledGaugeField& U, // never used for computation
+  const DoubledGaugeField& UUU,
+  const FermionField& left, 
+  const FermionField& right, 
+  int dag
+) {
+  /**
+   * @brief Forward Wirtinger derivative of kinetic fermion bilinears
+   * @author Curtis Taylor Peterson
+   * @details
+   * This method calculates the forward Wirtinger derivative of fermion bilinears
+   * (1) phi_{left}^dag M(m) phi_{right}
+   * with m the bare fermion mass and
+   * (2) M(m) = k1 D_{one-hop} + k2 D_{three-hop} + m,
+   * where k1, k2 are prefactors multiplying the one-hop and three-hop contributions to
+   * the "improved" staggered fermion operator. Recalling that the full pulled back force
+   * is schematically of the form
+   * (3) F = project_{Lie algebra}(-U dS/dU),
+   * what is meant by the "forward Wirtinger derivative" is the dS/dU factor, which is a
+   * matrix derivative with respect to the forward links, each component of which is an
+   * ordinary Wirtinger derivative. This method calculates the forward Wirtinger
+   * derivative with respect to the links that enter the one-hop (X) and three-hop (W)
+   * terms of the improved staggered fermion operator. These derivatives are eventually
+   * pulled back to the fundamental gauge field U (please excuse the confusing names given
+   * to the one- and three-hop terms in the method signature) outside of this class.
+   *
+   * link properties
+   * ---------------
+   *
+   * Note some important assumptions are made in this method that reflect both how this
+   * operator is used in real QCD simulations and some simplifications that help deal with
+   * Dirichlet boundary conditions:
+   * - The links entering the one-hop term may be non-unitary. This does not mean that
+   *   them being unitary will break anything. In practice, this doesn't actually matter
+   *   (see below), but it is the reason why the opt-in interface works with Wirtinger
+   *   derivatives as opposed to unprojected left-trivialized derivatives, which require
+   *   removing the link factor to recover the raw derivative for the chain rule (an
+   *   adjoint for unitary links; otherwise one has to swallow a numerically estimated
+   *   inverse, perhaps by some Cayley-Hamilton procedure).
+   * - The elementary links entering the three-hop term are assumed to be unitary. This is
+   *   purely for convenience, as it allows us to propagate the Dirichlet boundary
+   *   conditions already applied to "UUU" (i.e., "WWW") via successive Cartesian shifts
+   *   and group conjugation operations (see below). The stored UUU includes coefficients,
+   *   phases, and Dirichlet masks.
+   *
+   * one-hop derivative
+   * ------------------
+   *
+   * The Wirtinger derivative with respect to the one-hop links is of the form
+   * (4) d_{one-hop,mu}(n) = k1 m_{1-hop,mu}(n) phi_{right}(n + mu) phi_{left}^dag(n),
+   * where m_{1-hop,mu}(n) contains the staggered phases, global boundary phases (which
+   * take care of the periodic/anti-periodic boundary conditions), and possible Dirichlet
+   * masks (which take care of Dirichlet boundary conditions).
+   *
+   * three-hop derivative
+   * --------------------
+   *
+   * The forward three-hop contribution to the improved staggered operator is composed of
+   * three links, which are assumed to be unitary:
+   * (5) D_{three-hop,mu}(n -> n + 3 mu) = m_{3-hop,mu}(n)
+   *                                       W_{mu}(n) W_{mu}(n + mu) W_{mu}(n + 2 mu),
+   * with m_{3-hop,mu}(n) containing the staggered phases, global boundary phases, and
+   * possible Dirichlet masks. The width of the three-hop Dirichlet mask is 3 lattice
+   * units; see the two-port ImportGauge method for details. The three-hop derivative is 
+   * composed of three parts by the product rule. The unitarity of the links entering the 
+   * three-hop term simplifies two parts of the calculation. First, it allows me to 
+   * calculate the unprojected left-trivialized derivative, then convert it to the 
+   * Wirtinger derivative by multiplying on the left by W^dag. This is nice because, 
+   * second, each contribution K_{mu}^{(j)} to the three-hop derivative can be obtained 
+   * from K_{mu}^{(j-1)} as
+   * (6) K_{mu}^{(j)} = BackwardCartesianShift_{mu}[ W_{mu}^{dag} K_{mu}^{(j-1)} W_{mu} ]
+   * with
+   * (7) K_{mu}^{(0)}(n) = m_{3-hop,mu}(n)
+   *                       W_{mu}(n) W_{mu}(n + mu) W_{mu}(n + 2 mu)
+   *                       phi_{right}(n + 3 mu) phi_{left}^dag(n).
+   * The full three-hop derivative in direction mu is then
+   * (8) d_{three-hop,mu}(n) = k2 W_{mu}^{dag}(n) sum_{j=0}^{2} K_{mu}^{(j)}(n).
+   * There is one very important benefit that this approach provides outside of it just
+   * being cute: it allows us to propagate the Dirichlet masks and global boundary phases
+   * that are already folded into the first four components of the DoubledGaugeField
+   * constituting the sparse matrix representation of the three-hop term into each
+   * derivative term without having to explicitly apply them manually, like we do for the
+   * one-hop term; the staggered phases also conveniently propagate through the shifts.
+   * Quite neat, isn't it?
+   *
+   * derivative of conjugate operator
+   * --------------------------------
+   *
+   * One has
+   * (9) M^dag(m) = -M(-m)
+   * for staggered Dirac operators. As such, the forward derivative of M^dag can be 
+   * obtained from the forward derivative of M by multiplying by -1 (the derivative 
+   * knocks out the constant mass term).
+   */
+  GRID_ASSERT(dag == DaggerNo || dag == DaggerYes);
+  GRID_ASSERT(links.size() == 1 || links.size() == 2);
+
+  const std::size_t oneHopPort = links.size() - 1; // single-port branch compatibility
+  const std::size_t threeHopPort = 0;
+
+  GridBase* GaugeGrid = U.Grid();
+  GridBase* FermionGrid = left.Grid();
+  
+  FermionField leftTilde(FermionGrid);
+  FermionField rightTilde = right;
+
+  Compressor compressor;
+
+  stencil.HaloExchange(right, compressor);
+
+  if (c1 != 0.0) {
+    GaugeField X(GaugeGrid);
+
+    // staggered and boundary phases folded in m_{1-hop,mu}(n); Eqn (4)
+    X.Checkerboard() = U.Checkerboard();
+    X = 0.5*c1/u0;
+    this->rephase(_grid, X);
+
+    // one-hop Wirtinger derivative; Eqn (4)
+    for (int mu = 0; mu < Nd; ++mu) {
+      Kernels::template DhopDirForward<0>(stencil, X, right, rightTilde, mu);
+      derivs.template pokeIndex<LorentzIndex>(outerProduct(rightTilde, left), mu, oneHopPort);
+    }
+
+    // reimposition of Dirichlet masks contributing to m_{1-hop,mu}(n); Eqn (4)
+    if (Dirichlet) { this->applyDirichletMasks(derivs[oneHopPort], Block); }
   }
 
-  if (dag) { mat = -mat; }
+  if (c2 != 0.0) {
+    GaugeField W = links[threeHopPort];
+    GaugeLinkField cmp(_grid);
+    auto derivs3 = LinkDerivatives<GaugeField>::fromInputs(LinkInputs<GaugeField>({&W}));
+
+    for (int mu = 0; mu < Nd; ++mu) {
+      GaugeLinkField w = peekLorentz(W, mu);
+
+      // first term - same structure as one-hop contribution; Eqn (7)
+      Kernels::template DhopDirForward<1>(stencil, UUU, right, rightTilde, mu);
+      derivs3.template pokeIndex<LorentzIndex>(outerProduct(rightTilde, left), mu, threeHopPort);
+
+      // second term - requires communication, but necessary; Eqn (6)
+      cmp = Cshift(adj(w)*peekLorentz(derivs3[threeHopPort], mu)*w, mu, -1);
+      derivs3.template addIndex<LorentzIndex>(cmp, mu, threeHopPort);
+
+      // third term - requires communication, but necessary; Eqn (6)
+      cmp = Cshift(adj(w)*cmp*w, mu, -1);
+      derivs3.template addIndex<LorentzIndex>(cmp, mu, threeHopPort);
+
+      // accumulate three-hop contributions into the main derivative object; Eqn (8)
+      cmp = adj(w)*peekLorentz(derivs3[threeHopPort], mu);
+      derivs.template addIndex<LorentzIndex>(cmp, mu, threeHopPort);
+  } }
+
+  if (dag == DaggerYes) { derivs *= -1; }
 }
 
 template <class Impl>
@@ -312,32 +527,90 @@ void ImprovedStaggeredFermion<Impl>::DhopDeriv(GaugeField &mat, const FermionFie
 }
 
 template <class Impl>
-void ImprovedStaggeredFermion<Impl>::DhopDerivOE(GaugeField &mat, const FermionField &U, const FermionField &V, int dag) 
-{
-  conformable(U.Grid(), _cbgrid);
-  conformable(U.Grid(), V.Grid());
-  conformable(U.Grid(), mat.Grid());
+void ImprovedStaggeredFermion<Impl>::DhopDeriv(
+  LinkDerivatives<GaugeField>& derivs,
+  const LinkInputs<GaugeField>& links,
+  const FermionField& left,
+  const FermionField& right,
+  int dag
+) {
+  conformable(left.Grid(), _grid);
+  conformable(left.Grid(), right.Grid());
+  links.conformable(_grid);
 
-  GRID_ASSERT(V.Checkerboard() == Even);
-  GRID_ASSERT(U.Checkerboard() == Odd);
-  mat.Checkerboard() = Odd;
+  derivs = LinkDerivatives<GaugeField>::fromInputs(links);
+  DerivInternal(Stencil, derivs, links, Umu, UUUmu, left, right, dag);
+} 
 
-  DerivInternal(StencilEven, UmuOdd, UUUmuOdd, mat, U, V, dag);
+template <class Impl>
+void ImprovedStaggeredFermion<Impl>::DhopDerivOE(
+  GaugeField& mat, 
+  const FermionField& U, 
+  const FermionField& V, 
+  int dag
+) {
+  // This path is rejected because "mat" is restricted to a single checkerboard by 
+  // construction, but the three-hop derivative contributes to both checkerboards
+  GRID_ASSERT(0 && "strict checkerboarded derivative not defined for three-hop term"); 
 }
 
 template <class Impl>
-void ImprovedStaggeredFermion<Impl>::DhopDerivEO(GaugeField &mat, const FermionField &U, const FermionField &V, int dag) 
-{
-  conformable(U.Grid(), _cbgrid);
-  conformable(U.Grid(), V.Grid());
-  conformable(U.Grid(), mat.Grid());
+void ImprovedStaggeredFermion<Impl>::DhopDerivOE(
+  LinkDerivatives<GaugeField>& derivs,
+  const LinkInputs<GaugeField>& links,
+  const FermionField& left,
+  const FermionField& right,
+  int dag
+) {
+  // We do not reject this path because opt-in interface is not strictly checkerboarded,
+  // unlike the legacy interface; though input fields can occupy single checkerboard, 
+  // the derivative is accumulated into a full field. As such, the three-hop derivative 
+  // occupying multiple checkerboards is handled correctly.
+  GRID_ASSERT(left.Checkerboard() == Odd);
+  GRID_ASSERT(right.Checkerboard() == Even);
 
-  GRID_ASSERT(V.Checkerboard() == Odd);
-  GRID_ASSERT(U.Checkerboard() == Even);
-  mat.Checkerboard() = Even;
+  conformable(left.Grid(), _cbgrid);
+  conformable(left.Grid(), right.Grid());
+  links.conformable(_grid);
 
-  DerivInternal(StencilOdd, UmuEven, UUUmuEven, mat, U, V, dag);
+  derivs = LinkDerivatives<GaugeField>::fromInputs(links);
+  DerivInternal(StencilEven, derivs, links, UmuOdd, UUUmuOdd, left, right, dag);
+} 
+
+template <class Impl>
+void ImprovedStaggeredFermion<Impl>::DhopDerivEO(
+  GaugeField& mat, 
+  const FermionField& U, 
+  const FermionField& V, 
+  int dag
+) { 
+  // This path is rejected because "mat" is restricted to a single checkerboard by 
+  // construction, but the three-hop derivative contributes to both checkerboards
+  GRID_ASSERT(0 && "strict checkerboarded derivative not defined for three-hop term"); 
 }
+
+template <class Impl>
+void ImprovedStaggeredFermion<Impl>::DhopDerivEO(
+  LinkDerivatives<GaugeField>& derivs,
+  const LinkInputs<GaugeField>& links,
+  const FermionField& left,
+  const FermionField& right,
+  int dag
+) {
+  // We do not reject this path because opt-in interface is not strictly checkerboarded,
+  // unlike the legacy interface; though input fields can occupy single checkerboard, 
+  // the derivative is accumulated into a full field. As such, the three-hop derivative 
+  // occupying multiple checkerboards is handled correctly.
+  GRID_ASSERT(left.Checkerboard() == Even);
+  GRID_ASSERT(right.Checkerboard() == Odd);
+
+  conformable(left.Grid(), _cbgrid);
+  conformable(left.Grid(), right.Grid());
+  links.conformable(_grid);
+
+  derivs = LinkDerivatives<GaugeField>::fromInputs(links);
+  DerivInternal(StencilOdd, derivs, links, UmuEven, UUUmuEven, left, right, dag);
+} 
 
 template <class Impl>
 void ImprovedStaggeredFermion<Impl>::Dhop(const FermionField &in, FermionField &out, int dag) 

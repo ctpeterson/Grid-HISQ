@@ -195,6 +195,11 @@ public:
     e.derivatives += weight*std::move(partial);
   }
 
+  /** @brief convenience overload for unit weight accumulation */
+  template <class Callable>
+  void accumulate(FermionOperator<Fimpl>& op, Callable&& callable)
+  { accumulate(op, 1.0, std::forward<Callable>(callable)); }
+
 private:
   /** 
    * @brief Assembles Wirtinger derivatives for the direct field route
