@@ -241,7 +241,7 @@ void NaiveStaggeredFermion<Impl>::DerivInternal(
 
   for (int mu = 0; mu < Nd; ++mu) {
     Kernels::template DhopDirForward<0>(st, U, B, Btilde, mu);
-    pokeLorentz(mat, outerProduct(Btilde, Atilde), mu);
+    pokeLorentz(mat, this->outer(Btilde, Atilde), mu);
   }
 
   if (dag) { mat = -mat; }
@@ -320,7 +320,7 @@ void NaiveStaggeredFermion<Impl>::DerivInternal(
   // Wirtinger derivative; Eqn (4)
   for (int mu = 0; mu < Nd; ++mu) {
     Kernels::template DhopDirForward<0>(stencil, X, right, rightTilde, mu);
-    derivs.template pokeIndex<LorentzIndex>(outerProduct(rightTilde, left), mu, 0);
+    derivs.template pokeIndex<LorentzIndex>(this->outer(rightTilde, left), mu, 0);
   }
 
   // finish off by applying Dirichlet masks and daggering if requested

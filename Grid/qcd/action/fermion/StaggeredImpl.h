@@ -346,7 +346,14 @@ public:
     GRID_ASSERT (0); 
     // Must never hit
   }
+
+  GaugeLinkField outer(const FermionField &A, const FermionField &B) {
+    GaugeLinkField result = Grid::outerProduct(A, B);
+    result.Checkerboard() = B.Checkerboard();
+    return result;
+  }
 };
+
 typedef StaggeredImpl<vComplex,  FundamentalRepresentation > StaggeredImplR;   // Real.. whichever prec
 typedef StaggeredImpl<vComplexF, FundamentalRepresentation > StaggeredImplF;  // Float
 typedef StaggeredImpl<vComplexD, FundamentalRepresentation > StaggeredImplD;  // Double

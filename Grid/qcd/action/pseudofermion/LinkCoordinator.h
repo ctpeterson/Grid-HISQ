@@ -395,11 +395,11 @@ public:
   void useLinkMap() { _useLinkMap = true; }
 
   /** 
-   * @brief Finds registered operator whose linkIdentity() matches supplied pointer
+   * @brief Finds registered operator whose identity() matches supplied pointer
    * @details 
    * Validates the binding's basic structure, inserts or replaces the corresponding
    * FermionOperator's explicit selection, and enables map-based evaluation upon
-   * finding a registered operator with linkIdentity() matching the supplied pointer.
+   * finding a registered operator with identity() matching the supplied pointer.
    * Unrelated identities are rejected. The identity is compared only; output
    * resolution and import occur during evaluation.
    */
@@ -408,7 +408,7 @@ public:
     const LinkBinding<GaugeField>& binding
   ) {
     for (FermionOperator<Fimpl>* op : _operators) {
-      if (op->linkIdentity() == identity) {
+      if (op->identity() == identity) {
         validateBinding(binding);
         _bindings.insert_or_assign(op, binding);
         _useLinkMap = true;

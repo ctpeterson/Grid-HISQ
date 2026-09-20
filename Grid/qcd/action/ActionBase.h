@@ -173,7 +173,7 @@ public:
   /**
    * @brief Associates an operator's input ports with configuration output handles
    * @details
-   * The identity is the const void* returned by that operator's linkIdentity(),
+   * The identity is the const void* returned by that operator's identity(),
    * identifying its canonical FermionOperator base subobject. It is compared
    * with this action's borrowed operators and is never dereferenced. The binding is
    * a nonempty sequence of handles in the argument order of the intended ordinary
@@ -196,7 +196,7 @@ public:
   /**
    * @brief Binds an operator's inputs using its canonical link identity
    * @details
-   * Obtains op.linkIdentity() and forwards to the virtual identity-based overload,
+   * Obtains op.identity() and forwards to the virtual identity-based overload,
    * so the derived action still handles the selection. The member template itself
    * is non-virtual. Derived actions overriding bindLinks should publicly expose
    * this convenience overload with:
@@ -205,13 +205,8 @@ public:
    * @endcode
    */
   template <class Operator>
-  void bindLinks(Operator& op, const LinkBinding<GaugeField>& binding) 
-  { bindLinks(op.linkIdentity(), binding); }
-
-  /** @brief convenience overload for inferring binding to internal operators */
-  template <class Operator>
-  void bindLinks(const LinkBinding<GaugeField>& binding) 
-  { GRID_ASSERT(0 && "Action subclass does not provide automatic link binding"); }
+  void bindLinks(const Operator& op, const LinkBinding<GaugeField>& binding) 
+  { bindLinks(op.identity(), binding); }
   
 };
 

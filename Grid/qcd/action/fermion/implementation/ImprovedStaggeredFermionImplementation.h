@@ -324,7 +324,7 @@ void ImprovedStaggeredFermion<Impl>::DerivInternal(
   if (c1 != 0.0) { // one-hop contribution; assumes unitary links
     for (int mu = 0; mu < Nd; ++mu) {
       Kernels::template DhopDirForward<0>(st, U, B, Btilde, mu);
-      pokeLorentz(mat, outerProduct(Btilde, A), mu);
+      pokeLorentz(mat, this->outer(Btilde, A), mu);
   } }
 
   if (c2 != 0.0) { // three-hop contribution; assumes unitary links
@@ -339,7 +339,7 @@ void ImprovedStaggeredFermion<Impl>::DerivInternal(
       w = peekLorentz(U, mu) / (0.5*c1/u0*eta[mu]*bcs[mu]);
 
       Kernels::template DhopDirForward<1>(st, UUU, B, Btilde, mu);
-      deriv3 = outerProduct(Btilde, A);
+      deriv3 = this->outer(Btilde, A);
 
       cmp = Cshift(adj(w)*deriv3*w, mu, -1);
       deriv3 += cmp;
@@ -479,7 +479,7 @@ void ImprovedStaggeredFermion<Impl>::DerivInternal(
     // one-hop Wirtinger derivative; Eqn (4)
     for (int mu = 0; mu < Nd; ++mu) {
       Kernels::template DhopDirForward<0>(stencil, X, right, rightTilde, mu);
-      derivs.template pokeIndex<LorentzIndex>(outerProduct(rightTilde, left), mu, oneHopPort);
+      derivs.template pokeIndex<LorentzIndex>(this->outer(rightTilde, left), mu, oneHopPort);
     }
 
     // reimposition of Dirichlet masks contributing to m_{1-hop,mu}(n); Eqn (4)
@@ -496,7 +496,7 @@ void ImprovedStaggeredFermion<Impl>::DerivInternal(
 
       // first term - same structure as one-hop contribution; Eqn (7)
       Kernels::template DhopDirForward<1>(stencil, UUU, right, rightTilde, mu);
-      derivs3.template pokeIndex<LorentzIndex>(outerProduct(rightTilde, left), mu, threeHopPort);
+      derivs3.template pokeIndex<LorentzIndex>(this->outer(rightTilde, left), mu, threeHopPort);
 
       // second term - requires communication, but necessary; Eqn (6)
       cmp = Cshift(adj(w)*peekLorentz(derivs3[threeHopPort], mu)*w, mu, -1);

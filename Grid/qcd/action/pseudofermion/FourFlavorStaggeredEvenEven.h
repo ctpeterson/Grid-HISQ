@@ -95,14 +95,14 @@ public:
     return sstream.str();
   }
 
-public: // opt-in link interface
+public: // opt-in link interface: needs documentation
   void useLinkMap() { Links.useLinkMap(); }
 
   void bindLinks(const void* op, const LinkBinding<GaugeField>& bind)
   { Links.select(op, bind); }
-
+ 
   void bindLinks(const LinkBinding<GaugeField>& binding)
-  { Links.select(FermOp.linkIdentity(), binding); }
+  { bindLinks(FermOp.identity(), binding); }
 
 private:
   void _refresh(GridParallelRNG& pRNG) {
@@ -117,18 +117,28 @@ private:
      * (2) P(eta) ~ exp(-0.5 eta^dag eta)
      * using some Gaussian sampling algorithm and take
      * (3) Phi = sqrt(1/2) M^dag eta |_{even}.
-     * The Jacobian of the transformation eta -> Phi is constant.
+     * With scaled noise, only the even component is needed:
+     * (4) Phi = m eta_{even} + (K^dag)_{eo} eta_{odd}.
+     * Its covariance is (M^dag M)_{ee}, as required by exp(-S).
      */
-    FermionField eta(FermOp.FermionGrid()), phi(FermOp.FermionGrid());
-    gaussian(pRNG, eta);              // Eqn (2)
-    eta *= _scale;                    // <-+- Eqn (3)
-    FermOp.Mdag(eta, phi);            //   |
-    pickCheckerboard(Even, Phi, phi); // <-+
+    FermionField etaEven(FermOp.FermionRedBlackGrid());
+    FermionField etaOdd(FermOp.FermionRedBlackGrid());
+
+    {
+      FermionField eta(FermOp.FermionGrid());
+      gaussian(pRNG, eta); // Eqn (2)
+      eta *= _scale;
+      pickCheckerboard(Even, etaEven, eta);
+      pickCheckerboard(Odd, etaOdd, eta);
+    }
+
+    FermOp.MeooeDag(etaOdd, Phi); // <-+- Eqn (4)
+    Phi += FermOp.Mass()*etaEven; // <-+
   }
 
   RealD _action() {
     /**
-     * @brief Returns the pseudofermion action
+     * @brief Returns pseudofermion action
      * @author Curtis Taylor Peterson
      * @details
      * Computes the pseudofermion action S defined in Eqn (1) of the class
@@ -136,14 +146,6 @@ private:
      * (1) Psi = (M^dag M)^{-1} Phi
      * and calculate S as
      * (2) S = Phi^dagger Psi.
-     * 
-     * Alternatively, we could have taken
-     * (3) Psi = M (M^dag M)^{-1} Phi
-     * and calculated S as
-     * (4) S = Psi^dag Psi.
-     * Many codebases (such as Quantum EXpressions) do this; however, this method
-     * avoids an additional application of the M operator and works fully within the 
-     * even checkerboard.
      */
     FermionField Psi(FermOp.FermionRedBlackGrid());
     SchurStaggeredOperator<FermionOperator<Impl>, FermionField> MdagMOp(FermOp);
@@ -155,10 +157,10 @@ private:
   template <class Derivatives>
   void _deriv(Derivatives& dSdU) {
     /**
-     * @brief Pseudofermion action Wirtinger derivative
+     * @brief Wirtinger derivative of pseudofermion action
      * @author Curtis Taylor Peterson
      * @details
-     * Calculates the Wirtinger derivative of the pseudofermion action defined in Eqn (1)
+     * Calculates the Wirtinger derivative of pseudofermion action defined in Eqn (1)
      * of the class documentation. One has
      * (1) -dS = Phi^dag  (M^dag M)^-1 [ M^dag dM + dM^dag M ] (M^dag M)^-1 Phi
      *         = Chi^dag dM Psi + Psi^dag dM^dag Chi,
@@ -222,7 +224,7 @@ public:
   { return Links.action(U, [&]{ return _action(); }); }
 
   virtual void deriv(const GaugeField& U, GaugeField& dSdU) 
-  { Links.deriv(U, dSdU, [&](auto& deriv) { _deriv(deriv); }); }
+  { Links.deriv(U, dSdU, [&](auto& deriv){ _deriv(deriv); }); }
 
   virtual void refresh(
     ConfigurationBase<GaugeField>& U, 

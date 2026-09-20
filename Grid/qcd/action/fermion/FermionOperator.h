@@ -202,7 +202,7 @@ public:
    * inheritance. The pointer is compared, never dereferenced; the operator must
    * remain alive at the same address while a binding uses it.
    */
-  const void* linkIdentity() const { return this; }
+  const void* identity() const { return this; }
 
   /**
    * @brief Imports an ordered sequence through the ordinary ImportGauge interface

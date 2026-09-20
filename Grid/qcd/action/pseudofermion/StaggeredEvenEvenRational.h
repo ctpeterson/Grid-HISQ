@@ -42,24 +42,32 @@ NAMESPACE_BEGIN(Grid);
 template<class Impl>
 class StaggeredEvenEvenRational: public Action<typename Impl::GaugeField> {
 /**
+ * @class Grid::StaggeredEvenEvenRational
  * @brief Staggered even-even rational (rooted) pseudofermion action
  * @author Curtis Taylor Peterson
  * @details
- * Implements staggered even-even rational (rooted) staggered pseudofermion action:
+ * Implements staggered even-even (i.e., reduced) rational (i.e., rooted) staggered 
+ * pseudofermion action:
  * (1) S = Phi^dagger (M^dagger M)^(-Nf/4) Phi,
  * where Phi is defined on even sites only. Almost everything from the "four flavor"
  * class can be reused with minor modifications for the rooted case.
  */
-public: INHERIT_IMPL_TYPES(Impl);
+public: 
+  INHERIT_IMPL_TYPES(Impl);
+  using Action<GaugeField>::bindLinks;
 
 private:
   RealD _scale;
+
   StaggeredRationalActionParams _params;
+  
   FermionOperator<Impl>& FermOp;
 
   MultiShiftFunction OneEighthAction;
   MultiShiftFunction NegOneQuarterAction;
   MultiShiftFunction NegOneQuarterDeriv;
+
+  LinkCoordinator<Impl> Links{&FermOp};
 
 public:
   FermionField Phi;
@@ -144,6 +152,15 @@ public:
     return sstream.str();
   }
 
+public: // opt-in link interface: needs documentation
+  void useLinkMap() { Links.useLinkMap(); }
+
+  void bindLinks(const void* op, const LinkBinding<GaugeField>& bind)
+  { Links.select(op, bind); }
+ 
+  void bindLinks(const LinkBinding<GaugeField>& binding)
+  { bindLinks(FermOp.identity(), binding); }
+
 private:
   void _multiShiftSolve(
     const MultiShiftFunction& approx,
@@ -152,6 +169,7 @@ private:
   ) {
     SchurStaggeredOperator<FermionOperator<Impl>, FermionField> MdagM(FermOp);
     ConjugateGradientMultiShift<FermionField> solver(_params.MaxIter, approx);
+    
     for (int i = 0; i < outs.size(); ++i) 
     { outs[i].Checkerboard() = in.Checkerboard(); }
     solver(MdagM, in, outs);
@@ -165,6 +183,7 @@ private:
     SchurStaggeredOperator<FermionOperator<Impl>, FermionField> MdagM(FermOp);
     ConjugateGradientMultiShift<FermionField> solver(_params.MaxIter, approx);
     std::vector<FermionField> outs(approx.poles.size(), FermOp.FermionRedBlackGrid());
+    
     for (int i = 0; i < outs.size(); ++i) 
     { outs[i].Checkerboard() = in.Checkerboard(); }
     out.Checkerboard() = in.Checkerboard();
@@ -173,70 +192,101 @@ private:
 
 private:
   void _refresh(GridParallelRNG& pRNG) {
+    /**
+     * @brief Pseudofermion heatbath
+     * @author Curtis Taylor Peterson
+     * @details
+     * Given the action of Eqn (1) in the class documentation, one wishes to generate 
+     * a pseudofermion field Phi as
+     * (1) Phi = (M^dag M)^{Nf/8} eta |_{even}.
+     * As described in FourFlavorStaggeredEvenEven::_refresh, we start off by producing 
+     * a Gaussian full field eta scaled by sqrt(1/2), with
+     * (2) P(eta) ~ exp(-eta^dag eta),
+     * to which we obtain Phi as in Eqn (1) from a multi-shift solve.
+     */
     FermionField eta(FermOp.FermionGrid());
-    FermionField etae(FermOp.FermionRedBlackGrid());
-    gaussian(pRNG, eta);
+    FermionField EtaEven(FermOp.FermionRedBlackGrid());
+
+    gaussian(pRNG, eta); // Eqn (2)
     eta *= _scale;
-    pickCheckerboard(Even, etae, eta);
-    _multiShiftSolve(OneEighthAction, etae, Phi);
+    pickCheckerboard(Even, EtaEven, eta);
+    _multiShiftSolve(OneEighthAction, EtaEven, Phi); // Eqn (1)
   }
 
   RealD _action() {
+    /**
+     * @brief Pseudofermion action
+     * @author Curtis Taylor Peterson
+     * @details
+     * Computes the pseudofermion action S defined in Eqn (1) of the class
+     * documentation. The calculation is straightforward. Define
+     * (1) Psi = (M^dag M)^{-Nf/4} Phi
+     * and calculate S as
+     * (2) S = Phi^dagger Psi.
+     */
     FermionField Psi(FermOp.FermionRedBlackGrid());
-    _multiShiftSolve(NegOneQuarterAction, Phi, Psi);
-    return innerProduct(Phi, Psi).real();
+    
+    _multiShiftSolve(NegOneQuarterAction, Phi, Psi); // Eqn (1)
+    return innerProduct(Phi, Psi).real();            // Eqn (2)
   }
 
-  void _deriv(GaugeField& dSdU) {
+  template <class Derivatives>
+  void _deriv(Derivatives& dSdU) {
+    /**
+     * @brief Wirtinger derivative of pseudofermion action
+     * @author Curtis Taylor Peterson
+     * @details
+     * Because we are using a rational approximation of the staggered Dirac
+     * operator of the form
+     * (1) (M^dag M)^{-Nf/4} = alpha_0 + sum_{i=1}^{N} alpha_i / (M^dag M + beta_i),
+     * the force for the pseudofermion action ends up being nothing more than a 
+     * sum unrooted forces over each multi-shift solution. See documentation for the 
+     * corresponding force at FourFlavorStaggeredEvenEvenPseudoFermionAction::_deriv
+     * for details.
+     * 
+     * ***Grid::FourFlavorStaggeredEvenEvenPseudoFermionAction::_deriv docs
+     */
     const int numPoles = NegOneQuarterDeriv.poles.size();
     std::vector<FermionField> Psis(numPoles, FermOp.FermionRedBlackGrid());
-    GaugeField Force(FermOp.GaugeGrid());
-    GaugeField ForceE(FermOp.GaugeRedBlackGrid());
-    GaugeField ForceO(FermOp.GaugeRedBlackGrid());
     FermionField Chi(FermOp.FermionRedBlackGrid());
 
-    ForceE.Checkerboard() = Even;
-    ForceO.Checkerboard() = Odd;
-
-    _multiShiftSolve(NegOneQuarterDeriv, Phi, Psis);
-    
-    dSdU = Zero();
+    _multiShiftSolve(NegOneQuarterDeriv, Phi, Psis); // Eqn (2a)***
     for (int i = 0; i < numPoles; ++i) {
-      FermOp.Meooe(Psis[i], Chi);
-      FermOp.MeoDeriv(ForceE, Psis[i], Chi, DaggerNo);
-      FermOp.MoeDeriv(ForceO, Chi, Psis[i], DaggerYes);
+      FermOp.Meooe(Psis[i], Chi); // Eqn (2b)***
 
-      setCheckerboard(Force, ForceE);
-      setCheckerboard(Force, ForceO);
+      auto eo = [&](auto& op, auto& out, const auto& in)  // Term 1***
+      { op.MeoDeriv(out, in, Psis[i], Chi, DaggerNo); };      
+      auto oe = [&](auto& op, auto& out, const auto& in)  // Term 2***
+      { op.MoeDeriv(out, in, Chi, Psis[i], DaggerYes); };      
 
-      dSdU -= NegOneQuarterDeriv.residues[i]*Force;
+      dSdU.accumulate(FermOp, NegOneQuarterDeriv.residues[i], eo); // <-+- Eqn (1)***
+      dSdU.accumulate(FermOp, NegOneQuarterDeriv.residues[i], oe); // <-+
     }
   }
 
 public:
   virtual void refresh(const GaugeField& U, GridSerialRNG& sRNG, GridParallelRNG& pRNG)
-  { FermOp.ImportGauge(U); _refresh(pRNG); }
+  { Links.refresh(U, [&]{ _refresh(pRNG); }); }
 
-  virtual RealD S(const GaugeField& U) { FermOp.ImportGauge(U); return _action(); }
+  virtual RealD S(const GaugeField& U) 
+  { return Links.action(U, [&]{ return _action(); }); }
 
   virtual void deriv(const GaugeField& U, GaugeField& dSdU) 
-  { FermOp.ImportGauge(U); _deriv(dSdU); }
+  { Links.deriv(U, dSdU, [&](auto& deriv){ _deriv(deriv); }); }
 
   virtual void refresh(
     ConfigurationBase<GaugeField>& U, 
     GridSerialRNG& sRNG, 
     GridParallelRNG& pRNG
-  ) { refresh(U.get_U(this->is_smeared), sRNG, pRNG); }
+  ) { Links.refresh(U, this->is_smeared, [&]{ _refresh(pRNG); }); }
 
   virtual RealD S(ConfigurationBase<GaugeField>& U) 
-  { return S(U.get_U(this->is_smeared)); }
+  { return Links.action(U, this->is_smeared, [&]{ return _action(); }); }
 
-  virtual RealD Sinitial(ConfigurationBase<GaugeField>& U) { return _action(); }
+  virtual RealD Sinitial(ConfigurationBase<GaugeField>& U) { return S(U); }
 
-  virtual void deriv(ConfigurationBase<GaugeField>& U, GaugeField& dSdU) { 
-    deriv(U.get_U(this->is_smeared), dSdU); 
-    if (this->is_smeared) { U.smeared_force(dSdU); } 
-  }
+  virtual void deriv(ConfigurationBase<GaugeField>& U, GaugeField& dSdU) 
+  { Links.deriv(U, dSdU, this->is_smeared, [&](auto& deriv){ _deriv(deriv); }); }
 };
 
 NAMESPACE_END(Grid);
