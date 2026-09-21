@@ -188,19 +188,22 @@ int main(int argc, char **argv) {
   std::vector<Complex> boundary = {1, 1, 1, -1};
   StaggeredFermionOperator::ImplParams Params(boundary);
 
-  // Eq. A6: the charm correction enters both the asqtad and Naik links.
+  // Match MILC: M = 2m + Dslash, so double Grid's mass and hopping
+  // coefficients. This also matches MILC pseudofermion normalization.
+  // XML masses remain bare am; rational bounds refer to this MdagM (=4Q).
+  // Eq. A6 uses the bare charm mass, not the doubled constructor mass.
   RealD CharmNaikEpsilon = calcNaikEpsilon(Action.CharmFermionMass);
   StaggeredFermionOperator LightOp(
-    *GridPtr, *GridRBPtr, Action.LightFermionMass, 1.0, -1.0 / 24.0, 1.0, Params
+    *GridPtr, *GridRBPtr, 2.0 * Action.LightFermionMass, 2.0, -1.0 / 12.0, 1.0, Params
   );
   StaggeredFermionOperator StrangeOp(
-    *GridPtr, *GridRBPtr, Action.StrangeFermionMass, 1.0, -1.0 / 24.0, 1.0, Params
+    *GridPtr, *GridRBPtr, 2.0 * Action.StrangeFermionMass, 2.0, -1.0 / 12.0, 1.0, Params
   );
   StaggeredFermionOperator RegulatorOp(
-    *GridPtr, *GridRBPtr, Action.RegulatorFermionMass, 1.0, -1.0 / 24.0, 1.0, Params
+    *GridPtr, *GridRBPtr, 2.0 * Action.RegulatorFermionMass, 2.0, -1.0 / 12.0, 1.0, Params
   );
   StaggeredFermionOperator CharmOp(
-    *GridPtr, *GridRBPtr, Action.CharmFermionMass, 1.0, -(1.0 + CharmNaikEpsilon) / 24.0, 1.0, Params
+    *GridPtr, *GridRBPtr, 2.0 * Action.CharmFermionMass, 2.0, -(1.0 + CharmNaikEpsilon) / 12.0, 1.0, Params
   );
 
   HISQConfiguration<HMCWrapper::ImplPolicy> Policy(GridPtr);
@@ -351,14 +354,14 @@ int main(int argc, char **argv) {
     <MaxIterations>10000</MaxIterations>
   </ConjugateGradientParameters>
   <RationalApproximationParameters>
-    <LightLowerBound>0.000003</LightLowerBound>
-    <LightUpperBound>64.0</LightUpperBound>
-    <StrangeLowerBound>0.0025</StrangeLowerBound>
-    <StrangeUpperBound>64.0</StrangeUpperBound>
-    <CharmLowerBound>0.39</CharmLowerBound>
-    <CharmUpperBound>64.0</CharmUpperBound>
-    <RegulatorLowerBound>0.039</RegulatorLowerBound>
-    <RegulatorUpperBound>64.0</RegulatorUpperBound>
+    <LightLowerBound>0.000012</LightLowerBound>
+    <LightUpperBound>256.0</LightUpperBound>
+    <StrangeLowerBound>0.01</StrangeLowerBound>
+    <StrangeUpperBound>256.0</StrangeUpperBound>
+    <CharmLowerBound>1.56</CharmLowerBound>
+    <CharmUpperBound>256.0</CharmUpperBound>
+    <RegulatorLowerBound>0.156</RegulatorLowerBound>
+    <RegulatorUpperBound>256.0</RegulatorUpperBound>
     <ActionDegree>40</ActionDegree>
     <ForceDegree>32</ForceDegree>
     <Precision>80</Precision>
