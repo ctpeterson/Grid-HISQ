@@ -369,15 +369,34 @@ DhopDirForwardMacro(Tp);
 
 #undef DhopDirForwardMacro
 
+// Select the specialization before launching the site loop.
+#define LoopBody(Dir)                                                  \
+  case Dir:                                                            \
+    if (naik) {                                                        \
+      accelerator_for(ss, Nsite*Ls, Simd::Nsimd(), {                   \
+        int sF = ss;                                                   \
+        int sU = ss / Ls;                                              \
+        DhopDirForwardKernel##Dir<1>(stv, Uv, buf, inv, outv, sF, sU); \
+      });                                                              \
+    } else {                                                           \
+      accelerator_for(ss, Nsite*Ls, Simd::Nsimd(), {                   \
+        int sF = ss;                                                   \
+        int sU = ss / Ls;                                              \
+        DhopDirForwardKernel##Dir<0>(stv, Uv, buf, inv, outv, sF, sU); \
+      });                                                              \
+    }                                                                  \
+    break;
+
 template <class Impl>
-template <int Naik, class _Gauge>
 void StaggeredKernels<Impl>::DhopDirForward(
   StencilImpl& st,
-  const _Gauge& U,
+  const GaugeField& U,
   const FermionField& in,
   FermionField& out,
-  int dir
+  int dir,
+  int naik
 ) {
+  GRID_ASSERT(naik == 0 || naik == 1);
   GridBase* FermionGrid = in.Grid();
   GridBase* GaugeGrid = U.Grid();
 
@@ -394,14 +413,40 @@ void StaggeredKernels<Impl>::DhopDirForward(
   autoView(inv, in, AcceleratorRead);
   autoView(outv, out, AcceleratorWrite);
 
-#define LoopBody(Dir)                                                                 \
-  case Dir:                                                                           \
-    accelerator_for(ss, Nsite*Ls, Simd::Nsimd(), {                                    \
-      int sF = ss;                                                                    \
-      int sU = ss / Ls;                                                               \
-      DhopDirForwardKernel##Dir<Naik>(stv, Uv, buf, inv, outv, sF, sU);               \
-    });                                                                               \
-    break;
+  switch (dir) {
+    LoopBody(Xp);
+    LoopBody(Yp);
+    LoopBody(Zp);
+    LoopBody(Tp);
+    default: GRID_ASSERT(0 && "invalid direction in DhopDirForward"); break;
+  }
+}
+
+template <class Impl>
+void StaggeredKernels<Impl>::DhopDirForward(
+  StencilImpl& st,
+  const DoubledGaugeField& U,
+  const FermionField& in,
+  FermionField& out,
+  int dir,
+  int naik
+) {
+  GRID_ASSERT(naik == 0 || naik == 1);
+  GridBase* FermionGrid = in.Grid();
+  GridBase* GaugeGrid = U.Grid();
+
+  int Ls = 1;
+  int Nsite = GaugeGrid->oSites();
+
+  SiteSpinor* buf = st.CommBuf();
+
+  out.Checkerboard() = U.Checkerboard();
+  if (FermionGrid->Nd() == GaugeGrid->Nd() + 1) { Ls = FermionGrid->_rdimensions[0]; }
+
+  autoView(stv, st, AcceleratorRead);
+  autoView(Uv, U, AcceleratorRead);
+  autoView(inv, in, AcceleratorRead);
+  autoView(outv, out, AcceleratorWrite);
 
   switch (dir) {
     LoopBody(Xp);
@@ -410,9 +455,9 @@ void StaggeredKernels<Impl>::DhopDirForward(
     LoopBody(Tp);
     default: GRID_ASSERT(0 && "invalid direction in DhopDirForward"); break;
   }
+}
 
 #undef LoopBody
-}
 
 #define KERNEL_CALLNB(A,improved)					\
   const uint64_t    NN = Nsite*Ls;					\

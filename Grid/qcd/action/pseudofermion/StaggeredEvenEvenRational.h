@@ -26,12 +26,14 @@ See the full license in the file "LICENSE" in the top level distribution
 directory
 *************************************************************************************/
 /*  END LEGAL */
+
 /**
-  @file StaggeredEvenEvenRational.h
-  @author Curtis Taylor Peterson
-*/
+ * @file StaggeredEvenEvenRational.h
+ * @author Curtis Taylor Peterson
+ */
 
 #pragma once
+
 #include <Grid/Grid.h>
 
 #ifndef QCD_PSEUDOFERMION_STAGGERED_EVEN_EVEN_RATIONAL_H

@@ -26,12 +26,14 @@ See the full license in the file "LICENSE" in the top level distribution
 directory
 *************************************************************************************/
 /*  END LEGAL */
+
 /**
-  @file StaggeredEvenEvenRatioRational.h
-  @author Curtis Taylor Peterson
-*/
+ * @file StaggeredEvenEvenRatioRational.h
+ * @author Curtis Taylor Peterson
+ */
 
 #pragma once
+
 #include <Grid/Grid.h>
 
 #ifndef QCD_PSEUDOFERMION_STAGGERED_EVEN_EVEN_RATIO_RATIONAL_H
@@ -278,33 +280,31 @@ private:
      * @author Curtis Taylor Peterson
      * @details
      * Calculates the Wirtinger derivative of the pseudofermion action defined in
-     * Eqn (1) of the class documentation. As in _action, we start by defining
-     * (1a) X = (N^dag N)_{ee}^{Nf/8} Phi,
-     * (1b) Y = (D^dag D)_{ee}^{-Nf/4} X,
-     * so that S = X^dag Y. Here we use the rational approximations generated for
-     * the force calculation, which may differ from those used in _action.
-     * Writing the numerator and denominator poles as beta_j^N and beta_k^D,
-     * the multi-shift solves give X and Y, along with
-     * (2a) Xs_j = ((N^dag N)_{ee} + beta_j^N)^{-1} Phi,
-     * (2b) Ys_k = ((D^dag D)_{ee} + beta_k^D)^{-1} X,
-     * (2c) Zs_j = ((N^dag N)_{ee} + beta_j^N)^{-1} Y.
+     * Eqn (1) of the docs directly below the class definition. As in docs under 
+     * _action, we start by defining
+     * (1a) X = (N^dag N)^{Nf/8} Phi,
+     * (1b) Y = (D^dag D)^{-Nf/4} X,
+     * so that S = X^dag Y. Writing the numerator and denominator poles as betaN_j 
+     * and betaD_k, the multi-shift solves give X and Y, along with
+     * (2a) X_j = (N^dag N + betaN_j)^{-1} Phi,
+     * (2b) Y_k = (D^dag D + betaD_k)^{-1} X,
+     * (2c) Z_j = (N^dag N + betaN_j)^{-1} Y.
      *
      * Applying Eqn (1)*** to each inverse while holding Phi fixed, one has
-     * (3) -dS = sum_k r_k Ys_k^dag d(D^dag D)_{ee} Ys_k
-     *         + sum_j r_j ( Zs_j^dag d(N^dag N)_{ee} Xs_j
-     *                    + Xs_j^dag d(N^dag N)_{ee} Zs_j ),
-     * where r_k and r_j are the denominator and numerator residues, respectively.
+     * (3) -dS = sum_{d} r_d Y_d^dag d(D^dag D) Y_d
+     *         + sum_{n} r_n [ Z_n^dag d(N^dag N) X_n
+     *                       + X_n^dag d(N^dag N) Z_n ],
+     * where r_d and r_n are the denominator and numerator residues, respectively.
      * The first sum is the force of an ordinary four-flavor staggered pseudofermion
-     * action for each Ys_k, scaled by r_k. The numerator appears on both sides of
-     * the action, so differentiating it gives two terms for each pole. The first
-     * gives eoA and oeA below; the second gives eoB and oeB, with Xs_j and Zs_j
-     * exchanged. Both are scaled by r_j.
+     * action for each Ys_d, scaled by r_d. The numerator appears on both sides of
+     * the action, so differentiating it gives two terms for each pole. 
      *
      * As described in FourFlavorStaggeredEvenEvenPseudoFermionAction::_deriv,
-     * we can work fully within the checkerboards. Xs_j, Ys_k, and Zs_j live
+     * we can work fully within the checkerboards. X_n, Y_d, and Z_n live
      * on the even checkerboard. Applying Meooe gives the odd fields
-     * (4a) ChiL = D_{oe} Ys_k                       (denominator),
-     * (4b) ChiL = N_{oe} Zs_j,  ChiR = N_{oe} Xs_j   (numerator).
+     * (4a) ChiL_d = D_{oe} Ys_d,                      (denominator)
+     * (4b) ChiL_n = N_{oe} Z_n,                        (numerator)
+     * (4c) ChiR_n = N_{oe} X_n.                        (numerator)
      * As such, the force calculation follows the same procedure as in the
      * four-flavor class, with the fields and residues given above. See the
      * documentation for the corresponding force at
@@ -324,46 +324,46 @@ private:
     FermionField ChiL(NumOp.FermionRedBlackGrid());
     FermionField ChiR(NumOp.FermionRedBlackGrid());
 
-    _multiShiftSolve(Num, OneEighthNumDeriv, Phi, Xs, X);   // Eqns (1a), (2a)
-    _multiShiftSolve(Den, NegOneQuarterDenDeriv, X, Ys, Y); // Eqns (1b), (2b)
+    _multiShiftSolve(Num, OneEighthNumDeriv, Phi, Xs, X);   // Eqns (1a) & (2a)
+    _multiShiftSolve(Den, NegOneQuarterDenDeriv, X, Ys, Y); // Eqns (1b) & (2b)
     _multiShiftSolve(Num, OneEighthNumDeriv, Y, Zs);        // Eqn (2c)
  
-    for (int k = 0; k < denPoles; ++k) {
-      const RealD rk = NegOneQuarterDenDeriv.residues[k]; // Eqn (3)
+    for (int d = 0; d < denPoles; ++d) {
+      const RealD rd = NegOneQuarterDenDeriv.residues[d]; // Eqn (3)
 
-      DenOp.Meooe(Ys[k], ChiL); // Eqn (4a)
+      DenOp.Meooe(Ys[d], ChiL); // Eqn (4a)
 
       auto eo = [&](auto& op, auto& out, const auto& in)  // Term 1***
-      { op.MeoDeriv(out, in, Ys[k], ChiL, DaggerNo); };      
+      { op.MeoDeriv(out, in, Ys[d], ChiL, DaggerNo); };      
       auto oe = [&](auto& op, auto& out, const auto& in)  // Term 2***
-      { op.MoeDeriv(out, in, ChiL, Ys[k], DaggerYes); };      
+      { op.MoeDeriv(out, in, ChiL, Ys[d], DaggerYes); };      
 
-      dSdU.accumulate(DenOp, rk, eo); // <-+- First sum in Eqn (3)
-      dSdU.accumulate(DenOp, rk, oe); // <-+
+      dSdU.accumulate(DenOp, rd, eo); // <-+- First sum in Eqn (3)
+      dSdU.accumulate(DenOp, rd, oe); // <-+
     }
 
-    for (int j = 0; j < numPoles; ++j) {
-      const RealD rj = OneEighthNumDeriv.residues[j]; // Eqn (3)
+    for (int n = 0; n < numPoles; ++n) {
+      const RealD rn = OneEighthNumDeriv.residues[n]; // Eqn (3)
 
-      NumOp.Meooe(Zs[j], ChiL); // <-+- Eqn (4b)
-      NumOp.Meooe(Xs[j], ChiR); // <-+
+      NumOp.Meooe(Zs[n], ChiL); // Eqn (4b)
+      NumOp.Meooe(Xs[n], ChiR); // Eqn (4c)
 
       // Term 1***
       auto eoA = [&](auto& op, auto& out, const auto& in)
-      { op.MeoDeriv(out, in, Zs[j], ChiR, DaggerNo); };        
+      { op.MeoDeriv(out, in, Zs[n], ChiR, DaggerNo); };        
       auto eoB = [&](auto& op, auto& out, const auto& in)
-      { op.MeoDeriv(out, in, Xs[j], ChiL, DaggerNo); };      
+      { op.MeoDeriv(out, in, Xs[n], ChiL, DaggerNo); };      
 
       // Term 2***
       auto oeA = [&](auto& op, auto& out, const auto& in)
-      { op.MoeDeriv(out, in, ChiL, Xs[j], DaggerYes); }; 
+      { op.MoeDeriv(out, in, ChiL, Xs[n], DaggerYes); }; 
       auto oeB = [&](auto& op, auto& out, const auto& in)
-      { op.MoeDeriv(out, in, ChiR, Zs[j], DaggerYes); };   
+      { op.MoeDeriv(out, in, ChiR, Zs[n], DaggerYes); };   
       
-      dSdU.accumulate(NumOp, rj, eoA); // <-+- Second sum in Eqn (3)
-      dSdU.accumulate(NumOp, rj, eoB); //   |
-      dSdU.accumulate(NumOp, rj, oeA); //   |
-      dSdU.accumulate(NumOp, rj, oeB); // <-+
+      dSdU.accumulate(NumOp, rn, eoA); // <-+- Second sum in Eqn (3)
+      dSdU.accumulate(NumOp, rn, eoB); //   |
+      dSdU.accumulate(NumOp, rn, oeA); //   |
+      dSdU.accumulate(NumOp, rn, oeB); // <-+
     }
   }
 

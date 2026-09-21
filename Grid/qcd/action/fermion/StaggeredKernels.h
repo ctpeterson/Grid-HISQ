@@ -56,9 +56,10 @@ template<class Impl> class StaggeredKernels : public FermionOperator<Impl> , pub
 		 DoubledGaugeField &U,
 		 const FermionField &in, FermionField &out, int dag, int interior,int exterior);
 
-  template <int Naik, class _Gauge>
-  void DhopDirForward(StencilImpl &st, const _Gauge &U,
-                      const FermionField &in, FermionField &out, int dir);
+  void DhopDirForward(StencilImpl &st, const GaugeField &U,
+                      const FermionField &in, FermionField &out, int dir, int naik);
+  void DhopDirForward(StencilImpl &st, const DoubledGaugeField &U,
+                      const FermionField &in, FermionField &out, int dir, int naik);
   template <int Naik, class _Gauge> static accelerator_inline
   void DhopDirForwardKernelXp(StencilView& st, const LatticeView<_Gauge>& U,
     SiteSpinor* buf, const FermionFieldView& in, FermionFieldView& out, int sF, int sU);

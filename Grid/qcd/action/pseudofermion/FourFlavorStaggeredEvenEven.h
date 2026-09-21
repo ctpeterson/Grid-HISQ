@@ -26,12 +26,14 @@ See the full license in the file "LICENSE" in the top level distribution
 directory
 *************************************************************************************/
 /*  END LEGAL */
+
 /**
-  @file FourFlavorStaggeredEvenEven.h
-  @author Curtis Taylor Peterson
-*/
+ * @file FourFlavorStaggeredEvenEven.h
+ * @author Curtis Taylor Peterson
+ */
 
 #pragma once
+
 #include <Grid/Grid.h>
 
 #ifndef QCD_PSEUDOFERMION_FOUR_FLAVOR_STAGGERED_EVEN_EVEN_H

@@ -99,6 +99,18 @@ struct UnitaryProjectionContext {
     UnitaryProjectionMethod projectionMethod = CayleyHamiltonProjection
   ): projectionMethod(projectionMethod), derivativeMethod(derivativeMethod) { }
   
+  bool operator==(const UnitaryProjectionContext& other) const {
+    return projectionMethod == other.projectionMethod &&
+           derivativeMethod == other.derivativeMethod &&
+           derivativeEigenvalueCutoff == other.derivativeEigenvalueCutoff &&
+           relativeSVDTolerance == other.relativeSVDTolerance &&
+           absoluteSVDTolerance == other.absoluteSVDTolerance &&
+           backupSVD == other.backupSVD &&
+           svdOnlyDerivative == other.svdOnlyDerivative;
+  }
+
+  bool operator!=(const UnitaryProjectionContext& other) const { return !(*this == other); }
+
   void setDerivativeEigenvalueCutoff(RealD cutoff) { 
     std::string err = "Cayley-Hamilton derivative only supports eigenvalue cutoff";
     assert(derivativeMethod == MIMDCollaborationDerivative && err.c_str());
@@ -471,7 +483,7 @@ public:
      * This is a so-called "Sylvester" system of equations, and it has an analytic 
      * solution for N = 3 that is calculated in the _sylvester3 method.
      */
-    GridBase *grid = u.Grid();
+    GridBase* grid = u.Grid();
     GaugeLinkField t1(grid), t2(grid), t3(grid);
 
     _inverse3(t1, v);        // (u'u)^(1/2) u^-1

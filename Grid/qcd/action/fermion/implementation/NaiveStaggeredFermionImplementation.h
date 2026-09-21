@@ -240,7 +240,7 @@ void NaiveStaggeredFermion<Impl>::DerivInternal(
   st.HaloExchange(B, compressor);
 
   for (int mu = 0; mu < Nd; ++mu) {
-    Kernels::template DhopDirForward<0>(st, U, B, Btilde, mu);
+    Kernels::DhopDirForward(st, U, B, Btilde, mu, 0);
     pokeLorentz(mat, this->outer(Btilde, Atilde), mu);
   }
 
@@ -319,7 +319,7 @@ void NaiveStaggeredFermion<Impl>::DerivInternal(
 
   // Wirtinger derivative; Eqn (4)
   for (int mu = 0; mu < Nd; ++mu) {
-    Kernels::template DhopDirForward<0>(stencil, X, right, rightTilde, mu);
+    Kernels::DhopDirForward(stencil, X, right, rightTilde, mu, 0);
     derivs.template pokeIndex<LorentzIndex>(this->outer(rightTilde, left), mu, 0);
   }
 

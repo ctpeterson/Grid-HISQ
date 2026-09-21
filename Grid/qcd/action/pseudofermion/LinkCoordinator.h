@@ -232,7 +232,7 @@ private:
     const GaugeField& u = map.fundamental();
     conformable(f, u);
     GaugeField d(u.Grid());
-    std::vector<LinkContribution<GaugeField>> derivatives;
+    std::vector<LinkDerivative<GaugeField>> derivatives;
 
     for (const auto& e : _entries) {
       for (std::size_t p = 0; p < e.derivatives.size(); ++p)

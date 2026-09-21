@@ -292,7 +292,7 @@ class LinkMap {
  * 
  * Defines two structs:
  * - Handle: Reference to a particular output of a particular configuration
- * - Contribution: Borrowed (derivative, configuration output) pair
+ * - Derivative: Borrowed (derivative, configuration output) pair
  * 
  * Imposes the following interface requirements on derived classes:
  * - resolve: Returns the field identified by a configuration handle.
@@ -310,10 +310,10 @@ class LinkMap {
  */
 public:
   /** @brief borrowed configuration owner and its local output identifier */
-  struct Handle { const LinkMap* owner; unsigned output; };
+  struct Handle { const LinkMap* owner; std::size_t output; };
   
   /** @brief borrowed raw derivative paired with the output it differentiates */
-  struct Contribution { Handle handle; const Field* derivative; };
+  struct Derivative { Handle handle; const Field* derivative; };
 
 public:
   LinkMap() = default;
@@ -344,7 +344,7 @@ public: // public-facing virtual methods
    * may target the same output; outputs without a direct contribution can still
    * receive derivatives through dependent outputs.
    *
-   * The directions argument contains borrowed derivative fields, not forward
+   * The derivatives argument contains borrowed derivative fields, not forward
    * perturbations. Their pointers must be nonnull and remain valid throughout
    * this synchronous call. The concrete implementation validates their handles
    * and layouts, consumes them without modifying or retaining them, and overwrites
@@ -355,7 +355,7 @@ public: // public-facing virtual methods
    */
   virtual void pullback(
     Field& result,
-    const std::vector<Contribution>& directions
+    const std::vector<Derivative>& derivatives
   ) const = 0;
 };
 
@@ -365,7 +365,7 @@ using LinkHandle = typename LinkMap<Field>::Handle;
 
 /** @brief public name for a raw derivative and its configuration output handle */
 template <class Field>
-using LinkContribution = typename LinkMap<Field>::Contribution;
+using LinkDerivative = typename LinkMap<Field>::Derivative;
 
 /** 
  * @brief Ordered configuration handles matching an operator's ImportGauge ports 

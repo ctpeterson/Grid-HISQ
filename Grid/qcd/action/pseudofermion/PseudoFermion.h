@@ -50,5 +50,6 @@ NAMESPACE_CHECK(LinkCoordinator);
 #include <Grid/qcd/action/pseudofermion/FourFlavorStaggeredEvenEvenRatio.h>
 #include <Grid/qcd/action/pseudofermion/StaggeredEvenEvenRational.h>
 #include <Grid/qcd/action/pseudofermion/StaggeredEvenEvenRatioRational.h>
+#include <Grid/qcd/action/pseudofermion/TwoPlusOneFlavorStaggeredEvenEvenRatioRational.h>
 
 #endif

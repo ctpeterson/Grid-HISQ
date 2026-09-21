@@ -141,18 +141,18 @@ struct HISFContext {
    * Context structure for passing parameters to HISF smearing and projection methods.
    */
   // fat7 smearing parameters
-  RealD c0, c1, c2, c3;
+  RealD c0 = 0.0, c1 = 0.0, c2 = 0.0, c3 = 0.0;
 
   // asqtad parameters
-  RealD lepage;
-  RealD naik;
+  RealD lepage = 0.0;
+  RealD naik = 0.0;
 
   // unitary projection parameters
-  bool backupSVD;
-  bool svdOnly;
-  RealD relSVDTolerance;
-  RealD absSVDTolerance;
-  RealD eigenCutoff;
+  bool backupSVD = false;
+  bool svdOnly = false;
+  RealD relSVDTolerance = 0.0;
+  RealD absSVDTolerance = 0.0;
+  RealD eigenCutoff = 0.0;
 
   HISFContext() { };
 
@@ -197,6 +197,19 @@ struct HISFContext {
     relSVDTolerance(relSVDTolerance), 
     absSVDTolerance(absSVDTolerance), 
     eigenCutoff(eigenCutoff) { };
+
+  // Exact configuration equality, including legacy projection parameters.
+  bool operator==(const HISFContext& other) const {
+    return c0 == other.c0 && c1 == other.c1 &&
+           c2 == other.c2 && c3 == other.c3 &&
+           lepage == other.lepage && naik == other.naik &&
+           backupSVD == other.backupSVD && svdOnly == other.svdOnly &&
+           relSVDTolerance == other.relSVDTolerance &&
+           absSVDTolerance == other.absSVDTolerance &&
+           eigenCutoff == other.eigenCutoff;
+  }
+
+  bool operator!=(const HISFContext& other) const { return !(*this == other); }
 };
 
 struct MILCContext {
@@ -227,29 +240,6 @@ struct MILCContext {
 
   Real factor(int naik) const { return naikFactors[naik]; }
 };
-
-//
-// helper procedures
-//
-
-//RealD naikEpsilon(RealD am) {
-//  /**
-//   * @brief Calculates Naik epsilon according to MILC prescription
-//   * @author Curtis Taylor Peterson
-//   * @brief
-//   * According to [MILC Collaboration (2010)], the Naik epsilon correction, Naik 
-//   * epsilon calculated from heavy quark mass am by combining Eqn 26 and Eqn 27
-//   * from [Follana, E. et al.].
-//   * References:
-//   * * Follana, E. et al.: https://doi.org/10.1103/PhysRevD.75.054502
-//   * * MILC Collaboration (2010): https://doi.org/10.1103/PhysRevD.82.074501
-//   */
-//  RealD result = am*am;
-//  result = NAIKEPS1*result + \
-//           NAIKEPS3*result*result*result + \
-//           NAIKEPS4*result*result*result*result;
-//  return result;
-//}
 
 //
 // highly improved staggered fermion implementation
@@ -494,6 +484,11 @@ public:
     projCtx.setRelativeSVDTolerance(RELBACKUPSVDTOLERANCE);
     projCtx.setAbsoluteSVDTolerance(ABSBACKUPSVDTOLERANCE);
     UnitaryProjection<Gimpl> projection(projCtx);
+    projection.project(V, U);
+  }
+
+  void project(GaugeField& V, const GaugeField& U, const UnitaryProjectionContext ctx) {
+    UnitaryProjection<Gimpl> projection(ctx);
     projection.project(V, U);
   }
 
