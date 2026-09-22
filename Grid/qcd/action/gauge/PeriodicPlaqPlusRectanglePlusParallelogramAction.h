@@ -102,14 +102,14 @@ struct OneLoopGaugeActionContext {
 };
 
 //
-// helper procedures for MILC coefficients
+// helper procedures for MILC coefficients with nf sea-quark flavors
 // 
 
-inline RealD oneLoopMILCRectangleCoefficient(RealD u0)
-{ return -(1.0 - (0.6264 - 1.1746 * 4) * std::log(u0)) / (20.0 * u0 * u0); }
+inline RealD oneLoopMILCRectangleCoefficient(RealD u0, int nf)
+{ return -(1.0 - (0.6264 - 1.1746 * nf) * std::log(u0)) / (20.0 * u0 * u0); }
 
-inline RealD oneLoopMILCParallelogramCoefficient(RealD u0)
-{ return (0.0433 - 0.0156 * 4) * std::log(u0) / (u0 * u0); }
+inline RealD oneLoopMILCParallelogramCoefficient(RealD u0, int nf)
+{ return (0.0433 - 0.0156 * nf) * std::log(u0) / (u0 * u0); }
 
 //
 // one-loop gauge action class

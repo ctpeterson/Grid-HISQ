@@ -280,10 +280,12 @@ int main(int argc, char **argv) {
   FermionAction RegulatorPF3(RegulatorOp, RegulatorParams);
   FermionAction CharmPF(CharmOp, CharmParams);
 
-  // Eq. A2, nf = 4 and beta = 10/g^2. Tadpole improvement is gauge-only.
+  // Eq. A2, beta = 10/g^2. Tadpole improvement is gauge-only.
+  // Count physical sea-quark flavors; the regulator determinants cancel.
+  const int nf = LightParams.nf + StrangeParams.nf + CharmParams.nf;
   RealD u0 = Action.TadpoleFactor;
-  RealD RectangleCoefficient = oneLoopMILCRectangleCoefficient(u0);
-  RealD ParallelogramCoefficient = oneLoopMILCParallelogramCoefficient(u0);
+  RealD RectangleCoefficient = oneLoopMILCRectangleCoefficient(u0, nf);
+  RealD ParallelogramCoefficient = oneLoopMILCParallelogramCoefficient(u0, nf);
   PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction<Gimpl> GaugeAction(
     GridPtr, Action.BareGaugeCoupling, 1.0, RectangleCoefficient, ParallelogramCoefficient
   );
