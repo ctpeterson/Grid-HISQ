@@ -43,7 +43,7 @@ public:
   It stores a list of smeared configurations.
 */
 template <class Gimpl>
-class SmearedConfiguration : public ConfigurationBase<typename Gimpl::Field>
+class StoutConfiguration : public ConfigurationBase<typename Gimpl::Field>
 {
 public:
   INHERIT_GIMPL_TYPES(Gimpl);
@@ -67,12 +67,12 @@ protected:
     // check the pointer is not null
     if (ThinLinks == NULL)
       std::cout << GridLogError
-                << "[SmearedConfiguration] Error in ThinLinks pointer\n";
+                << "[StoutConfiguration] Error in ThinLinks pointer\n";
 
     if (smearingLevels > 0)
     {
       std::cout << GridLogDebug
-                << "[SmearedConfiguration] Filling SmearedSet\n";
+                << "[StoutConfiguration] Filling SmearedSet\n";
       GaugeField previous_u(ThinLinks->Grid());
 
       previous_u = *ThinLinks;
@@ -84,7 +84,7 @@ protected:
         // For debug purposes
         RealD impl_plaq = WilsonLoops<Gimpl>::avgPlaquette(previous_u);
         std::cout << GridLogDebug
-                  << "[SmearedConfiguration] Plaq: " << impl_plaq << std::endl;
+                  << "[StoutConfiguration] Plaq: " << impl_plaq << std::endl;
       }
     }
   }
@@ -222,7 +222,7 @@ public:
 public:
 
   /* Standard constructor */
-  SmearedConfiguration(GridCartesian* UGrid, unsigned int Nsmear,
+  StoutConfiguration(GridCartesian* UGrid, unsigned int Nsmear,
                        Smear_Stout<Gimpl>& Stout)
       : smearingLevels(Nsmear), StoutSmearing(&Stout), ThinLinks(NULL)
   {
@@ -231,7 +231,7 @@ public:
   }
 
   /*! For just thin links */
-  SmearedConfiguration()
+  StoutConfiguration()
     : smearingLevels(0), StoutSmearing(nullptr), SmearedSet(), ThinLinks(NULL) {}
 
   // attach the smeared routines to the thin links U and fill the smeared set
@@ -312,5 +312,7 @@ public:
   }
 };
 
-NAMESPACE_END(Grid);
+template <class Gimpl>
+using SmearedConfiguration = StoutConfiguration<Gimpl>;
 
+NAMESPACE_END(Grid);

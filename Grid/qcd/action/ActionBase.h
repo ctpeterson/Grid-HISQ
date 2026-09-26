@@ -161,6 +161,8 @@ public:
 ///////////////////////////////////
 // Smart configuration base class
 ///////////////////////////////////
+enum class ConfigurationState { NotReady, Ready, Stale };
+
 template< class Field >
 class ConfigurationBase
 {
@@ -180,7 +182,7 @@ public:
 // new opt-in interface
 /////////////////////////
 public:
-  enum class ConfigurationState { NotReady, Ready, Stale };
+  using ConfigurationState = Grid::ConfigurationState;
   
 protected:
   ConfigurationState _state = ConfigurationState::NotReady;
@@ -209,6 +211,11 @@ protected:
   void fulfilled() { 
     _establish(); 
     if (_state == ConfigurationState::Stale) { _state = ConfigurationState::Ready; } 
+  }
+
+  void leftTrivializedCotangent(Field& UdSdU, const Field& U) const {
+    for (int mu = 0; mu < Nd; ++mu)
+    { pokeLorentz(UdSdU, -peekLorentz(U, mu) * peekLorentz(UdSdU, mu), mu); }
   }
 
 public: // opting in means implementing these virtual methods
@@ -319,8 +326,13 @@ public:
   bool hasOptedIn() const { return _hasOptedIn; }
 
 protected:
-  void initializeContracts() { GRID_ASSERT(!_hasOptedIn); }
-  void finalizeContracts() { _hasOptedIn = true; }
+  template <class Operator>
+  ActionContract<GaugeField> signContract(Operator& op, Primals<GaugeField>& primals) {
+    GRID_ASSERT(!primals.empty());
+    _hasOptedIn = true;
+    return ActionContract<GaugeField>(op.identity(), primals);
+  }
+
 };
 
 template <class GaugeField >

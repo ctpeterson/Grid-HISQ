@@ -209,17 +209,14 @@ public:
   }
 
 public: // opt-in link interface
-  void contract(
+  void signContract(
     Primals<GaugeField> numPrimals,
     Primals<GaugeField> den1Primals,
     Primals<GaugeField> den2Primals
   ) {
-    GRID_ASSERT(!numPrimals.empty() && !den1Primals.empty() && !den2Primals.empty());
-    this->initializeContracts();
-    _numContract = ActionContract<GaugeField>(NumOp.identity(), numPrimals);
-    _den1Contract = ActionContract<GaugeField>(Den1Op.identity(), den1Primals);
-    _den2Contract = ActionContract<GaugeField>(Den2Op.identity(), den2Primals);
-    this->finalizeContracts();
+    _numContract = Action<GaugeField>::signContract(NumOp, numPrimals);
+    _den1Contract = Action<GaugeField>::signContract(Den1Op, den1Primals);
+    _den2Contract = Action<GaugeField>::signContract(Den2Op, den2Primals);
   }
 
 private:

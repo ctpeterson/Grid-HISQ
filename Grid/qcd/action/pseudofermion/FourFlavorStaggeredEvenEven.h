@@ -97,12 +97,8 @@ public:
   }
 
 public: // opt-in link interface: needs documentation
-  void contract(Primals<GaugeField> primals) {
-    GRID_ASSERT(!primals.empty());
-    this->initializeContracts();
-    _contract = ActionContract<GaugeField>(FermOp.identity(), primals);
-    this->finalizeContracts();
-  }
+  void signContract(Primals<GaugeField> primals)
+  { _contract = Action<GaugeField>::signContract(FermOp, primals); }
 
 private:
   void _refresh(GridParallelRNG& pRNG) {

@@ -292,11 +292,11 @@ int main(int argc, char **argv) {
     oneLoopMILCParallelogramCoefficient(u0, nf)
   );
 
-  LightStrangePF.contract(LightStrangeLinks, LightStrangeLinks, LightStrangeLinks);
-  RegulatorPF1.contract(LightStrangeLinks);
-  RegulatorPF2.contract(LightStrangeLinks);
-  RegulatorPF3.contract(LightStrangeLinks);
-  CharmPF.contract(CharmLinks);
+  LightStrangePF.signContract(LightStrangeLinks, LightStrangeLinks, LightStrangeLinks);
+  RegulatorPF1.signContract(LightStrangeLinks);
+  RegulatorPF2.signContract(LightStrangeLinks);
+  RegulatorPF3.signContract(LightStrangeLinks);
+  CharmPF.signContract(CharmLinks);
 
   Level1.push_back(&LightStrangePF);
   Level1.push_back(&RegulatorPF1);
