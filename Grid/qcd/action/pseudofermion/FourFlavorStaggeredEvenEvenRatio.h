@@ -68,7 +68,6 @@ class FourFlavorStaggeredEvenEvenRatioPseudoFermionAction: public Action<typenam
  */
 public: 
   INHERIT_IMPL_TYPES(Impl);
-  using Action<GaugeField>::bindLinks;
 
 private:
   RealD _scale, _delta;
@@ -79,7 +78,7 @@ private:
   OperatorFunction<FermionField>& DerivativeSolver;
   OperatorFunction<FermionField>& ActionSolver;
 
-  LinkCoordinator<Impl> Links{&NumOp, &DenOp};
+  ActionContract<GaugeField> _numContract, _denContract;
 
 public:
   FermionField Phi;
@@ -115,15 +114,13 @@ public:
   }
 
 public: // opt-in link interface: needs documentation
-  void useLinkMap() { Links.useLinkMap(); }
-
-  void bindLinks(const void* op, const LinkBinding<GaugeField>& bind)
-  { Links.select(op, bind); }
-
-  void bindLinks(
-    const LinkBinding<GaugeField>& numBind,
-    const LinkBinding<GaugeField>& denBind
-  ) { bindLinks(NumOp.identity(), numBind); bindLinks(DenOp.identity(), denBind); }
+  void contract(Primals<GaugeField> numPrimals, Primals<GaugeField> denPrimals) {
+    GRID_ASSERT(!numPrimals.empty() && !denPrimals.empty());
+    this->initializeContracts();
+    _numContract = ActionContract<GaugeField>(NumOp.identity(), numPrimals);
+    _denContract = ActionContract<GaugeField>(DenOp.identity(), denPrimals);
+    this->finalizeContracts();
+  }
 
 private:
   void _refresh(GridParallelRNG& pRNG) {
@@ -202,8 +199,8 @@ private:
     return norm + _delta*overlap.real();       // <-+
   }
 
-  template <class Derivatives>
-  void _deriv(Derivatives& dSdU) {
+  template <class Derivative>
+  void _deriv(Derivative& dSdU) {
     /**
      * @brief Wirtinger derivative of pseudofermion action
      * @author Curtis Taylor Peterson
@@ -224,38 +221,60 @@ private:
     DerivativeSolver(MdagM, Phi, Psi); // Eqn (2a)***
     DenOp.Meooe(Psi, Chi);             // Eqn (2b)***
 
-    auto eo = [&](auto& op, auto& out, const auto& in) // Term 1***
-    { op.MeoDeriv(out, in, Psi, Chi, DaggerNo); };      
-    auto oe = [&](auto& op, auto& out, const auto& in) // Term 2***
-    { op.MoeDeriv(out, in, Chi, Psi, DaggerYes); };   
+    auto eo = [&](auto& out) // Term 1***
+    { DenOp.MeoDeriv(out, Psi, Chi, DaggerNo); };
+    auto oe = [&](auto& out) // Term 2***
+    { DenOp.MoeDeriv(out, Chi, Psi, DaggerYes); };
 
-    dSdU.accumulate(DenOp, _delta, eo); // <-+- Eqn (1)***
-    dSdU.accumulate(DenOp, _delta, oe); // <-+
+    dSdU = Zero();
+    accumulate(dSdU, _denContract, _delta, eo); // <-+- Eqn (1)***
+    accumulate(dSdU, _denContract, _delta, oe); // <-+
   }
 
 public:
   virtual void refresh(const GaugeField& U, GridSerialRNG& sRNG, GridParallelRNG& pRNG)
-  { Links.refresh(U, [&]{ _refresh(pRNG); }); }
+  { NumOp.ImportGauge(U); DenOp.ImportGauge(U); _refresh(pRNG); }
 
   virtual RealD S(const GaugeField& U) 
-  { return Links.action(U, [&]{ return _action(); }); }
+  { NumOp.ImportGauge(U); DenOp.ImportGauge(U); return _action(); }
 
-  virtual void deriv(const GaugeField& U, GaugeField& dSdU) 
-  { Links.deriv(U, dSdU, [&](auto& deriv){ _deriv(deriv); }); }
+  virtual void deriv(const GaugeField& U, GaugeField& UdSdU)
+  { NumOp.ImportGauge(U); DenOp.ImportGauge(U); _deriv(UdSdU); }
 
   virtual void refresh(
     ConfigurationBase<GaugeField>& U, 
     GridSerialRNG& sRNG, 
     GridParallelRNG& pRNG
-  ) { Links.refresh(U, this->is_smeared, [&]{ _refresh(pRNG); }); }
+  ) {
+    if (this->hasOptedIn()) {
+      NumOp.ImportGauge(_numContract); 
+      DenOp.ImportGauge(_denContract); 
+      _refresh(pRNG);
+    } else { refresh(U.get_U(this->is_smeared), sRNG, pRNG); return; }
+  }
 
-  virtual RealD S(ConfigurationBase<GaugeField>& U) 
-  { return Links.action(U, this->is_smeared, [&]{ return _action(); }); }
+  virtual RealD S(ConfigurationBase<GaugeField>& U) {
+    if (this->hasOptedIn()) {
+      NumOp.ImportGauge(_numContract); 
+      DenOp.ImportGauge(_denContract); 
+      return _action();
+    } else { return S(U.get_U(this->is_smeared)); }
+  }
 
   virtual RealD Sinitial(ConfigurationBase<GaugeField>& U) { return S(U); }
 
-  virtual void deriv(ConfigurationBase<GaugeField>& U, GaugeField& dSdU) 
-  { Links.deriv(U, dSdU, this->is_smeared, [&](auto& deriv){ _deriv(deriv); }); }
+  virtual void deriv(ConfigurationBase<GaugeField>& U, GaugeField& UdSdU) {
+    if (this->hasOptedIn()) {
+      PrimalCotangentPairs<GaugeField> dSdU;
+      NumOp.ImportGauge(_numContract); 
+      DenOp.ImportGauge(_denContract);
+      _deriv(dSdU);
+      U.pullback(UdSdU, dSdU);
+    } else {
+      deriv(U.get_U(this->is_smeared), UdSdU);
+      if (this->is_smeared) { U.smeared_force(UdSdU); }
+    }
+  }
 };
 
 NAMESPACE_END(Grid);

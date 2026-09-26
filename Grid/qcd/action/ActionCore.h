@@ -32,8 +32,6 @@ directory
 
 #include <Grid/qcd/action/gauge/GaugeImplementations.h>
 
-#include <Grid/qcd/action/LinkInterface.h>
-NAMESPACE_CHECK(LinkInterface);
 #include <Grid/qcd/action/ActionBase.h>
 NAMESPACE_CHECK(ActionBase);
 #include <Grid/qcd/action/ActionSet.h>

@@ -65,7 +65,6 @@ class TwoPlusOneFlavorStaggeredEvenEvenRatioRational: public Action<typename Imp
  */
 public:
   INHERIT_IMPL_TYPES(Impl);
-  using Action<GaugeField>::bindLinks;
 
 private:
   RealD _scale;
@@ -86,9 +85,9 @@ private:
   MultiShiftFunction NegOneEighthDen2Action;   // <---+
   MultiShiftFunction OneEighthNumDeriv;        // <---+--- force
   MultiShiftFunction NegOneQuarterDen1Deriv;   //     |
-  MultiShiftFunction NegOneEighthDen2Deriv;     // <---+
+  MultiShiftFunction NegOneEighthDen2Deriv;    // <---+
 
-  LinkCoordinator<Impl> Links{&NumOp, &Den1Op, &Den2Op};
+  ActionContract<GaugeField> _numContract, _den1Contract, _den2Contract;
 
 public:
   FermionField Phi;
@@ -210,19 +209,17 @@ public:
   }
 
 public: // opt-in link interface
-  void useLinkMap() { Links.useLinkMap(); }
-
-  void bindLinks(const void* op, const LinkBinding<GaugeField>& bind)
-  { Links.select(op, bind); }
-
-  void bindLinks(
-    const LinkBinding<GaugeField>& numBind,
-    const LinkBinding<GaugeField>& den1Bind,
-    const LinkBinding<GaugeField>& den2Bind
+  void contract(
+    Primals<GaugeField> numPrimals,
+    Primals<GaugeField> den1Primals,
+    Primals<GaugeField> den2Primals
   ) {
-    bindLinks(NumOp.identity(),  numBind);
-    bindLinks(Den1Op.identity(), den1Bind);
-    bindLinks(Den2Op.identity(), den2Bind);
+    GRID_ASSERT(!numPrimals.empty() && !den1Primals.empty() && !den2Primals.empty());
+    this->initializeContracts();
+    _numContract = ActionContract<GaugeField>(NumOp.identity(), numPrimals);
+    _den1Contract = ActionContract<GaugeField>(Den1Op.identity(), den1Primals);
+    _den2Contract = ActionContract<GaugeField>(Den2Op.identity(), den2Primals);
+    this->finalizeContracts();
   }
 
 private:
@@ -312,8 +309,8 @@ private:
     return innerProduct(Y, Z).real();
   }
 
-  template <class Derivatives>
-  void _deriv(Derivatives& dSdU) {
+  template <class Derivative>
+  void _deriv(Derivative& dSdU) {
     /**
      * @brief Wirtinger derivative of pseudofermion action
      * @author Curtis Taylor Peterson
@@ -358,18 +355,20 @@ private:
     _multiShiftSolve(Den2Op, _den2Params, NegOneEighthDen2Deriv, Z, ZsDen2, T);
     _multiShiftSolve(NumOp, _numParams, OneEighthNumDeriv, T, TsNum);
 
+    dSdU = Zero();
+
     for (int d = 0; d < den1Poles; ++d) {
       const RealD rd = NegOneQuarterDen1Deriv.residues[d]; // Eqn (2)
 
       Den1Op.Meooe(YsDen1[d], ChiL); // Eqn (1a)
 
-      auto eo = [&](auto& op, auto& out, const auto& in)
-      { op.MeoDeriv(out, in, YsDen1[d], ChiL, DaggerNo); };
-      auto oe = [&](auto& op, auto& out, const auto& in)
-      { op.MoeDeriv(out, in, ChiL, YsDen1[d], DaggerYes); };
+      auto eo = [&](auto& out)
+      { Den1Op.MeoDeriv(out, YsDen1[d], ChiL, DaggerNo); };
+      auto oe = [&](auto& out)
+      { Den1Op.MoeDeriv(out, ChiL, YsDen1[d], DaggerYes); };
 
-      dSdU.accumulate(Den1Op, rd, eo); // <-+- Den1 sum in Eqn (2)
-      dSdU.accumulate(Den1Op, rd, oe); // <-+
+      accumulate(dSdU, _den1Contract, rd, eo); // <-+- Den1 sum in Eqn (2)
+      accumulate(dSdU, _den1Contract, rd, oe); // <-+
     }
 
     for (int n = 0; n < den2Poles; ++n) {
@@ -379,21 +378,21 @@ private:
       Den2Op.Meooe(XsDen2[n], ChiR);
 
       // Meo contribution
-      auto eoA = [&](auto& op, auto& out, const auto& in)
-      { op.MeoDeriv(out, in, ZsDen2[n], ChiR, DaggerNo); };
-      auto eoB = [&](auto& op, auto& out, const auto& in)
-      { op.MeoDeriv(out, in, XsDen2[n], ChiL, DaggerNo); };
+      auto eoA = [&](auto& out)
+      { Den2Op.MeoDeriv(out, ZsDen2[n], ChiR, DaggerNo); };
+      auto eoB = [&](auto& out)
+      { Den2Op.MeoDeriv(out, XsDen2[n], ChiL, DaggerNo); };
 
       // Moe contribution
-      auto oeA = [&](auto& op, auto& out, const auto& in)
-      { op.MoeDeriv(out, in, ChiL, XsDen2[n], DaggerYes); };
-      auto oeB = [&](auto& op, auto& out, const auto& in)
-      { op.MoeDeriv(out, in, ChiR, ZsDen2[n], DaggerYes); };
+      auto oeA = [&](auto& out)
+      { Den2Op.MoeDeriv(out, ChiL, XsDen2[n], DaggerYes); };
+      auto oeB = [&](auto& out)
+      { Den2Op.MoeDeriv(out, ChiR, ZsDen2[n], DaggerYes); };
 
-      dSdU.accumulate(Den2Op, rn, eoA); // <-+- Den2 sum in Eqn (2)
-      dSdU.accumulate(Den2Op, rn, eoB); //   |
-      dSdU.accumulate(Den2Op, rn, oeA); //   |
-      dSdU.accumulate(Den2Op, rn, oeB); // <-+
+      accumulate(dSdU, _den2Contract, rn, eoA); // <-+- Den2 sum in Eqn (2)
+      accumulate(dSdU, _den2Contract, rn, eoB); //   |
+      accumulate(dSdU, _den2Contract, rn, oeA); //   |
+      accumulate(dSdU, _den2Contract, rn, oeB); // <-+
     }
 
     for (int n = 0; n < numPoles; ++n) {
@@ -403,47 +402,71 @@ private:
       NumOp.Meooe(XsNum[n], ChiR);
 
       // Meo contribution
-      auto eoA = [&](auto& op, auto& out, const auto& in)
-      { op.MeoDeriv(out, in, TsNum[n], ChiR, DaggerNo); };
-      auto eoB = [&](auto& op, auto& out, const auto& in)
-      { op.MeoDeriv(out, in, XsNum[n], ChiL, DaggerNo); };
+      auto eoA = [&](auto& out)
+      { NumOp.MeoDeriv(out, TsNum[n], ChiR, DaggerNo); };
+      auto eoB = [&](auto& out)
+      { NumOp.MeoDeriv(out, XsNum[n], ChiL, DaggerNo); };
 
       // Moe contribution
-      auto oeA = [&](auto& op, auto& out, const auto& in)
-      { op.MoeDeriv(out, in, ChiL, XsNum[n], DaggerYes); };
-      auto oeB = [&](auto& op, auto& out, const auto& in)
-      { op.MoeDeriv(out, in, ChiR, TsNum[n], DaggerYes); };
+      auto oeA = [&](auto& out)
+      { NumOp.MoeDeriv(out, ChiL, XsNum[n], DaggerYes); };
+      auto oeB = [&](auto& out)
+      { NumOp.MoeDeriv(out, ChiR, TsNum[n], DaggerYes); };
 
-      dSdU.accumulate(NumOp, rn, eoA); // <-+- Num sum in Eqn (2)
-      dSdU.accumulate(NumOp, rn, eoB); //   |
-      dSdU.accumulate(NumOp, rn, oeA); //   |
-      dSdU.accumulate(NumOp, rn, oeB); // <-+
+      accumulate(dSdU, _numContract, rn, eoA); // <-+- Num sum in Eqn (2)
+      accumulate(dSdU, _numContract, rn, eoB); //   |
+      accumulate(dSdU, _numContract, rn, oeA); //   |
+      accumulate(dSdU, _numContract, rn, oeB); // <-+
     }
   }
 
 public:
   virtual void refresh(const GaugeField& U, GridSerialRNG& sRNG, GridParallelRNG& pRNG)
-  { Links.refresh(U, [&]{ _refresh(pRNG); }); }
+  { NumOp.ImportGauge(U); Den1Op.ImportGauge(U); Den2Op.ImportGauge(U); _refresh(pRNG); }
 
   virtual RealD S(const GaugeField& U)
-  { return Links.action(U, [&]{ return _action(); }); }
+  { NumOp.ImportGauge(U); Den1Op.ImportGauge(U); Den2Op.ImportGauge(U); return _action(); }
 
-  virtual void deriv(const GaugeField& U, GaugeField& dSdU)
-  { Links.deriv(U, dSdU, [&](auto& deriv){ _deriv(deriv); }); }
+  virtual void deriv(const GaugeField& U, GaugeField& UdSdU)
+  { NumOp.ImportGauge(U); Den1Op.ImportGauge(U); Den2Op.ImportGauge(U); _deriv(UdSdU); }
 
   virtual void refresh(
     ConfigurationBase<GaugeField>& U,
     GridSerialRNG& sRNG,
     GridParallelRNG& pRNG
-  ) { Links.refresh(U, this->is_smeared, [&]{ _refresh(pRNG); }); }
+  ) {
+    if (this->hasOptedIn()) {
+      NumOp.ImportGauge(_numContract); 
+      Den1Op.ImportGauge(_den1Contract); 
+      Den2Op.ImportGauge(_den2Contract);
+      _refresh(pRNG);
+    } else { refresh(U.get_U(this->is_smeared), sRNG, pRNG); return; }
+  }
 
-  virtual RealD S(ConfigurationBase<GaugeField>& U)
-  { return Links.action(U, this->is_smeared, [&]{ return _action(); }); }
+  virtual RealD S(ConfigurationBase<GaugeField>& U) {
+    if (this->hasOptedIn()) {
+      NumOp.ImportGauge(_numContract); 
+      Den1Op.ImportGauge(_den1Contract); 
+      Den2Op.ImportGauge(_den2Contract);
+      return _action();
+    } else { return S(U.get_U(this->is_smeared)); }
+  }
 
   virtual RealD Sinitial(ConfigurationBase<GaugeField>& U) { return S(U); }
 
-  virtual void deriv(ConfigurationBase<GaugeField>& U, GaugeField& dSdU)
-  { Links.deriv(U, dSdU, this->is_smeared, [&](auto& deriv){ _deriv(deriv); }); }
+  virtual void deriv(ConfigurationBase<GaugeField>& U, GaugeField& UdSdU) {
+    if (this->hasOptedIn()) {
+      PrimalCotangentPairs<GaugeField> dSdU;
+      NumOp.ImportGauge(_numContract); 
+      Den1Op.ImportGauge(_den1Contract); 
+      Den2Op.ImportGauge(_den2Contract);
+      _deriv(dSdU);
+      U.pullback(UdSdU, dSdU);
+    } else {
+      deriv(U.get_U(this->is_smeared), UdSdU);
+      if (this->is_smeared) { U.smeared_force(UdSdU); }
+    }
+  }
 };
 
 NAMESPACE_END(Grid);

@@ -204,29 +204,20 @@ public:
    */
   const void* identity() const { return this; }
 
-  /**
-   * @brief Imports an ordered sequence through the ordinary ImportGauge interface
-   * @details
-   * The base accepts one input and forwards to the ordinary single-field virtual
-   * by default. Operators supporting additional inputs override this method and 
-   * forward to the ordinary overload matching the input count and order.
-   */
-  virtual void ImportGauge(const LinkInputs<GaugeField>& inputs) {
-    if (!(inputs.size() == 1)) { GRID_ASSERT(0 && "expected single port"); }
-    ImportGauge(inputs[0]);
+  virtual void ImportGauge(const ActionContract<GaugeField>& contract) {
+    GRID_ASSERT(contract.first == identity());
+    if (contract.second.size() != 1) { GRID_ASSERT(0 && "expected single port"); }
+    ImportGauge(contract.second[0].resolve());
   }
 
   /**
    * @brief Writes complete Wirtinger derivatives of the hopping term
    * @details
    * Calculates Wirtinger derivative(s) of hopping term. Number of calculated 
-   * derivatives corresonds to number of input ports specified by the contract
-   * that LinkMap establishes and the maximum number of ports that the operator
-   * actually supports. 
+   * derivatives corresponds to the number of supplied input ports.
    */
   virtual void DhopDeriv(
-    LinkDerivatives<GaugeField>&,
-    const LinkInputs<GaugeField>&,
+    PrimalCotangentPairs<GaugeField>&,
     const FermionField&,
     const FermionField&,
     int
@@ -234,8 +225,7 @@ public:
 
   /** @brief Writes raw hopping derivatives for the even-to-odd block */
   virtual void DhopDerivOE(
-    LinkDerivatives<GaugeField>&,
-    const LinkInputs<GaugeField>&,
+    PrimalCotangentPairs<GaugeField>&,
     const FermionField&,
     const FermionField&,
     int
@@ -243,8 +233,7 @@ public:
 
   /** @brief Writes raw hopping derivatives for the odd-to-even block */
   virtual void DhopDerivEO(
-    LinkDerivatives<GaugeField>&,
-    const LinkInputs<GaugeField>&,
+    PrimalCotangentPairs<GaugeField>&,
     const FermionField&,
     const FermionField&,
     int
@@ -252,35 +241,31 @@ public:
 
   /** @brief Defaults to DhopDeriv; override for additional operator dependence */
   virtual void MDeriv(
-    LinkDerivatives<GaugeField>& derivatives,
-    const LinkInputs<GaugeField>& links,
+    PrimalCotangentPairs<GaugeField>& derivatives,
     const FermionField& right,
     const FermionField& left,
     int dag
-  ) { DhopDeriv(derivatives, links, right, left, dag); }
+  ) { DhopDeriv(derivatives, right, left, dag); }
 
   /** @brief Defaults to DhopDerivOE; override for a different off-diagonal block */
   virtual void MoeDeriv(
-    LinkDerivatives<GaugeField>& derivatives,
-    const LinkInputs<GaugeField>& links,
+    PrimalCotangentPairs<GaugeField>& derivatives,
     const FermionField& right,
     const FermionField& left,
     int dag
-  ) { DhopDerivOE(derivatives, links, right, left, dag); }
+  ) { DhopDerivOE(derivatives, right, left, dag); }
 
   /** @brief Defaults to DhopDerivEO; override for a different off-diagonal block */
   virtual void MeoDeriv(
-    LinkDerivatives<GaugeField>& derivatives,
-    const LinkInputs<GaugeField>& links,
+    PrimalCotangentPairs<GaugeField>& derivatives,
     const FermionField& right,
     const FermionField& left,
     int dag
-  ) { DhopDerivEO(derivatives, links, right, left, dag); }
+  ) { DhopDerivEO(derivatives, right, left, dag); }
 
   /** @brief Writes raw derivatives of the odd diagonal block */
   virtual void MooDeriv( // a cow's favorite derivative
-    LinkDerivatives<GaugeField>&,
-    const LinkInputs<GaugeField>&,
+    PrimalCotangentPairs<GaugeField>&,
     const FermionField&,
     const FermionField&,
     int
@@ -288,8 +273,7 @@ public:
 
   /** @brief Writes raw derivatives of the even diagonal block */
   virtual void MeeDeriv(
-    LinkDerivatives<GaugeField>&,
-    const LinkInputs<GaugeField>&,
+    PrimalCotangentPairs<GaugeField>&,
     const FermionField&,
     const FermionField&,
     int

@@ -144,9 +144,11 @@ void NaiveStaggeredFermion<Impl>::ImportGauge(const GaugeField &Uin)
 }
 
 template <class Impl>
-void NaiveStaggeredFermion<Impl>::ImportGauge(const LinkInputs<GaugeField>& in) {
-  in.conformable(_grid);
-  if (in.size() == 1) { ImportGauge(in[0]); } 
+void NaiveStaggeredFermion<Impl>::ImportGauge(const ActionContract<GaugeField>& contract) {
+  GRID_ASSERT(contract.first == this->identity());
+  const auto& in = contract.second;
+  conformable(in, _grid);
+  if (in.size() == 1) { ImportGauge(in[0].resolve()); }
   else { GRID_ASSERT(0 && "invalid port count"); }
 }
 
@@ -228,7 +230,7 @@ void NaiveStaggeredFermion<Impl>::DerivInternal(
   /**
    * @brief Unprojected left-trivialized derivative of kinetic fermion bilinears
    * @author Curtis Taylor Peterson
-   * @details See the DerivInternal overload w/ LinkDerivatives and LinkInputs below
+   * @details See the tagged-field DerivInternal overload below
    */
   GRID_ASSERT((dag == DaggerNo) || (dag == DaggerYes));
 
@@ -250,8 +252,7 @@ void NaiveStaggeredFermion<Impl>::DerivInternal(
 template <class Impl>
 void NaiveStaggeredFermion<Impl>::DerivInternal(
   StencilImpl& stencil,
-  LinkDerivatives<GaugeField>& derivs, 
-  const LinkInputs<GaugeField>& links, 
+  PrimalCotangentPairs<GaugeField>& derivs,
   const DoubledGaugeField& U, // never used for computation
   const FermionField& left, 
   const FermionField& right, 
@@ -301,6 +302,9 @@ void NaiveStaggeredFermion<Impl>::DerivInternal(
    * knocks out the constant mass term).
    */
   GRID_ASSERT(dag == DaggerNo || dag == DaggerYes);
+  GRID_ASSERT(derivs.size() == 1);
+  
+  conformable(derivs, _grid);
 
   GridBase* GaugeGrid = U.Grid();
   GridBase* FermionGrid = left.Grid();
@@ -313,6 +317,8 @@ void NaiveStaggeredFermion<Impl>::DerivInternal(
 
   stencil.HaloExchange(right, compressor);
 
+  derivs = Zero();
+
   X.Checkerboard() = U.Checkerboard();
   X = 0.5*c1/u0;
   this->rephase(_grid, X);
@@ -320,7 +326,7 @@ void NaiveStaggeredFermion<Impl>::DerivInternal(
   // Wirtinger derivative; Eqn (4)
   for (int mu = 0; mu < Nd; ++mu) {
     Kernels::DhopDirForward(stencil, X, right, rightTilde, mu, 0);
-    derivs.template pokeIndex<LorentzIndex>(this->outer(rightTilde, left), mu, 0);
+    pokeLorentz(derivs[0], this->outer(rightTilde, left), mu);
   }
 
   // finish off by applying Dirichlet masks and daggering if requested
@@ -346,18 +352,14 @@ void NaiveStaggeredFermion<Impl>::DhopDeriv(
 
 template <class Impl>
 void NaiveStaggeredFermion<Impl>::DhopDeriv(
-  LinkDerivatives<GaugeField>& derivs,
-  const LinkInputs<GaugeField>& links,
+  PrimalCotangentPairs<GaugeField>& derivs,
   const FermionField& left,
   const FermionField& right,
   int dag
 ) {
   conformable(left.Grid(), _grid);
   conformable(left.Grid(), right.Grid());
-  links.conformable(_grid);
-
-  derivs = LinkDerivatives<GaugeField>::fromInputs(links);
-  DerivInternal(Stencil, derivs, links, Umu, left, right, dag);
+  DerivInternal(Stencil, derivs, Umu, left, right, dag);
 }
 
 template <class Impl>
@@ -365,7 +367,7 @@ void NaiveStaggeredFermion<Impl>::DhopDerivOE(GaugeField &mat, const FermionFiel
 
   conformable(U.Grid(), _cbgrid);
   conformable(U.Grid(), V.Grid());
-  conformable(U.Grid(), mat.Grid());
+  mat.reset(_cbgrid);
 
   GRID_ASSERT(V.Checkerboard() == Even);
   GRID_ASSERT(U.Checkerboard() == Odd);
@@ -376,8 +378,7 @@ void NaiveStaggeredFermion<Impl>::DhopDerivOE(GaugeField &mat, const FermionFiel
 
 template <class Impl>
 void NaiveStaggeredFermion<Impl>::DhopDerivOE(
-  LinkDerivatives<GaugeField>& derivs,
-  const LinkInputs<GaugeField>& links,
+  PrimalCotangentPairs<GaugeField>& derivs,
   const FermionField& left,
   const FermionField& right,
   int dag
@@ -387,10 +388,7 @@ void NaiveStaggeredFermion<Impl>::DhopDerivOE(
 
   conformable(left.Grid(), _cbgrid);
   conformable(left.Grid(), right.Grid());
-  links.conformable(_grid);
-
-  derivs = LinkDerivatives<GaugeField>::fromInputs(links);
-  DerivInternal(StencilEven, derivs, links, UmuOdd, left, right, dag);
+  DerivInternal(StencilEven, derivs, UmuOdd, left, right, dag);
 } 
 
 template <class Impl>
@@ -398,7 +396,7 @@ void NaiveStaggeredFermion<Impl>::DhopDerivEO(GaugeField &mat, const FermionFiel
 
   conformable(U.Grid(), _cbgrid);
   conformable(U.Grid(), V.Grid());
-  conformable(U.Grid(), mat.Grid());
+  mat.reset(_cbgrid);
 
   GRID_ASSERT(V.Checkerboard() == Odd);
   GRID_ASSERT(U.Checkerboard() == Even);
@@ -409,8 +407,7 @@ void NaiveStaggeredFermion<Impl>::DhopDerivEO(GaugeField &mat, const FermionFiel
 
 template <class Impl>
 void NaiveStaggeredFermion<Impl>::DhopDerivEO(
-  LinkDerivatives<GaugeField>& derivs,
-  const LinkInputs<GaugeField>& links,
+  PrimalCotangentPairs<GaugeField>& derivs,
   const FermionField& left,
   const FermionField& right,
   int dag
@@ -420,10 +417,7 @@ void NaiveStaggeredFermion<Impl>::DhopDerivEO(
 
   conformable(left.Grid(), _cbgrid);
   conformable(left.Grid(), right.Grid());
-  links.conformable(_grid);
-
-  derivs = LinkDerivatives<GaugeField>::fromInputs(links);
-  DerivInternal(StencilOdd, derivs, links, UmuEven, left, right, dag);
+  DerivInternal(StencilOdd, derivs, UmuEven, left, right, dag);
 } 
 
 template <class Impl>

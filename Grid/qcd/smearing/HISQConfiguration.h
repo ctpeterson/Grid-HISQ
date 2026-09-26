@@ -37,6 +37,7 @@ directory
 #include <Grid/Grid.h>
 #include <Grid/qcd/utils/HighlyImprovedStaggeredFermionImpl.h>
 #include <cmath>
+#include <deque>
 
 #ifndef QCD_SMEARING_HISQ_CONFIGURATION_H
 #define QCD_SMEARING_HISQ_CONFIGURATION_H
@@ -130,8 +131,7 @@ enum HISQLinks: unsigned { UnitaryFat7 = 2, Asqtad };
 
 template <class Impl>
 class HISQConfiguration: 
-  public ConfigurationBase<typename Impl::GaugeField>,
-  public LinkMap<typename Impl::GaugeField> {
+  public ConfigurationBase<typename Impl::GaugeField> {
 /**
  * @class Grid::HISQConfiguration
  * @brief
@@ -143,9 +143,8 @@ class HISQConfiguration:
 public:
   INHERIT_FIELD_TYPES(Impl);
   using GaugeField = typename Impl::GaugeField;
-  using Derivative = typename LinkMap<GaugeField>::Derivative;
-  using Derivatives = std::vector<Derivative>;
-  using StaggeredFermionOperator = StaggeredImpl<typename Impl::Simd>;
+  using Derivative = PrimalCotangentPair<GaugeField>;
+  using Derivatives = PrimalCotangentPairs<GaugeField>;
 
 private:
   mutable HighlyImprovedStaggeredFermionImpl<Impl> _hisf;
@@ -155,8 +154,7 @@ private:
   GaugeField* ThinLink;                // U
   GaugeField Fat7Link;                 // V: shared by all contexts
   GaugeField UnitaryFat7Link;          // W: shared by all contexts
-  std::vector<GaugeField> AsqtadLinks; // X: indexed with _contexts
-  bool _linksReady = false;
+  std::deque<GaugeField> AsqtadLinks;  // X: indexed with _contexts
 
 public:
   /** @brief constructor for opt-in interface */
@@ -166,6 +164,9 @@ public:
     Fat7Link(grid), 
     UnitaryFat7Link(grid),
     AsqtadLinks(0, grid) { }
+
+  HISQConfiguration(const HISQConfiguration&) = delete;
+  HISQConfiguration& operator=(const HISQConfiguration&) = delete;
 
 private:
   void _validateRegistration() const
@@ -211,7 +212,8 @@ private:
 
   void _validateReady() const {
     GRID_ASSERT(
-      _linksReady && ThinLink != NULL &&
+      this->_state == ConfigurationBase<GaugeField>::ConfigurationState::Ready &&
+      ThinLink != NULL &&
       "HISQ links not prepared; call set_Field after registration"
     );
   }
@@ -230,19 +232,18 @@ private:
     GRID_ASSERT(AsqtadLinks.size() == _contexts.size() && "asqtad links not initialized");
   }
 
-  void _validateHandle(const LinkHandle<GaugeField>& handle) const {
-    GRID_ASSERT(handle.owner == this && "handle does not belong to this configuration");
+  void _validatePrimal(const Primal<GaugeField>& primal) const {
+    GRID_ASSERT(primal.owner() == this && "primal does not belong to this configuration");
     GRID_ASSERT(
-      handle.output >= HISQLinks::UnitaryFat7 &&
-      "HISQ bindings must use UnitaryFat7 or Asqtad"
+      primal.id() >= HISQLinks::UnitaryFat7 &&
+      "HISQ primals must use UnitaryFat7 or Asqtad"
     );
-    if (handle.output >= HISQLinks::Asqtad) { _asqIdx(handle.output); }
+    if (primal.id() >= HISQLinks::Asqtad) { _asqIdx(primal.id()); }
   }
 
   void _validateDerivative(const Derivative& input) const {
-    _validateHandle(input.handle);
-    GRID_ASSERT(input.derivative != nullptr && "null HISQ derivative");
-    conformable(*input.derivative, Fat7Link);
+    _validatePrimal(input.primal());
+    conformable(input, Fat7Link);
   }
 
   void _validateDerivatives(const Derivatives& inputs) const
@@ -283,14 +284,13 @@ private:
 
     dSdW = Zero();
     for (const auto& input : inputs) {
-      LinkHandle<GaugeField> handle = input.handle;
-      std::size_t idx = handle.output;
-      const GaugeField* deriv = input.derivative;
+      std::size_t idx = input.primal().id();
+      const GaugeField& deriv = input;
 
       if (idx >= HISQLinks::Asqtad) { 
-        _hisf.smearDerivative(tmp, adj(*deriv), UnitaryFat7Link, _asqtadCtx(_asqIdx(idx))); 
+        _hisf.smearDerivative(tmp, adj(deriv), UnitaryFat7Link, _asqtadCtx(_asqIdx(idx)));
         dSdW += tmp; 
-      } else if (idx == HISQLinks::UnitaryFat7) { dSdW += adj(*deriv); } 
+      } else if (idx == HISQLinks::UnitaryFat7) { dSdW += adj(deriv); }
     }
   }
 
@@ -307,70 +307,53 @@ private:
   }
 
 public:
-  LinkHandle<GaugeField> UnitaryFat7() const { return {this, HISQLinks::UnitaryFat7}; }
-  LinkHandle<GaugeField> Asqtad(std::size_t idx = 0) const {
+  Primal<GaugeField> UnitaryFat7() const { return primal(HISQLinks::UnitaryFat7); }
+  Primal<GaugeField> Asqtad(std::size_t idx = 0) const {
     GRID_ASSERT(idx < _contexts.size() && "unregistered HISQ context");
-    return {this, HISQLinks::Asqtad + idx};
+    return primal(HISQLinks::Asqtad + idx);
   }
-
-  LinkMap<GaugeField>* linkMap() { return this; }
 
 public:
   /**
-   * @brief Create an action's link binding during HMC application setup
+   * @brief Create an action's primals during HMC application setup
    * @author Curtis Taylor Peterson
    * @details
    * @code
    * HISQConfiguration<HMCWrapper::ImplPolicy> policy(GridPtr);
-   * action.bindLinks(policy.links(context));
+   * action.contract(policy.links(context));
    * TheHMC.Run(policy);
    * @endcode
    */
-  LinkBinding<GaugeField> links(const HISQContext& ctx) {
+  Primals<GaugeField> promise(const HISQContext& ctx) {
     _validateFirstStage(ctx);
 
     const std::size_t index = _contexts.size();
-    const LinkHandle<GaugeField> output{this, HISQLinks::Asqtad + index}; 
-    LinkBinding<GaugeField> binding{UnitaryFat7(), output};
 
     AsqtadLinks.emplace_back(_hisf.ugrid);
     try { _contexts.push_back(ctx); } catch (...) { AsqtadLinks.pop_back(); throw; }
     
-    _linksReady = false;
+    this->smeared();
 
-    return binding;
+    return {UnitaryFat7(), Asqtad(index)};
   }
 
   /** @brief Register default smearing and projection with the requested epsilon */
-  LinkBinding<GaugeField> links(RealD epsilon = 0.0) { return links(HISQContext(epsilon)); }
+  Primals<GaugeField> promise(RealD epsilon = 0.0) { return promise(HISQContext(epsilon)); }
 
   /** @brief Register default smearing and projection with the requested asqtad */
-  LinkBinding<GaugeField> links(const HISFContext& asqtad) 
-  { return links(HISQContext(asqtad)); }
+  Primals<GaugeField> promise(const HISFContext& asqtad)
+  { return promise(HISQContext(asqtad)); }
 
-public: // implement LinkMap interface
-  const GaugeField& resolve(LinkHandle<GaugeField> handle) const {
-    _validateReady();
+public: // implement opt-in link interface
+  Primal<GaugeField> primal(std::size_t id) const {
     _validateAsqtadLinks();
-    _validateHandle(handle);
-    if (handle.output == HISQLinks::UnitaryFat7) { return UnitaryFat7Link; }
-    return AsqtadLinks[_asqIdx(handle.output)];
+    if (id == HISQLinks::UnitaryFat7) { return {this, id, UnitaryFat7Link}; }
+    return {this, id, AsqtadLinks[_asqIdx(id)]};
   }
 
   const GaugeField& fundamental() const { _validateReady(); return *ThinLink; }
 
-  /** @brief default binding not particularly useful for multi-flavor actions */
-  LinkBinding<GaugeField> defaultBinding(const std::type_info& operatorType) const {
-    GRID_ASSERT(_contexts.size() == 1 && "ambiguous default binding");
-    if (operatorType == typeid(NaiveStaggeredFermion<StaggeredFermionOperator>))
-    { return {Asqtad()}; }
-    if (operatorType == typeid(ImprovedStaggeredFermion<StaggeredFermionOperator>))
-    { return {UnitaryFat7(), Asqtad()}; }
-    GRID_ASSERT(0 && "unsupported operator type for default binding");
-    return {};
-  }; 
-
-  void pullback(GaugeField& dSdU, const Derivatives& inputs) const {
+  void pullback(GaugeField& dSdU, Derivatives& inputs) const {
     conformable(dSdU.Grid(), Fat7Link.Grid());
 
     _validateReady();
@@ -382,6 +365,8 @@ public: // implement LinkMap interface
     
     _secondStagePullback(dSdW, inputs);
     _firstStagePullback(dSdU, dSdW);
+    for (int mu = 0; mu < Nd; ++mu)
+    { pokeLorentz(dSdU, -peekLorentz(*ThinLink, mu) * peekLorentz(dSdU, mu), mu); }
 
     std::cout << GridLogMessage 
               << "GaugeConfiguration: Smeared Force chain rule took " 
@@ -392,13 +377,19 @@ public: // implement LinkMap interface
 
 public: // implement Configuration interface 
   void set_Field(GaugeField& U) {
-    _linksReady = false;
+    this->set();
+    ThinLink = &U;
+    smear();
+  }
+
+  void smear() {
+    this->smeared();
+    GRID_ASSERT(ThinLink != NULL && "HISQ links not prepared; call set_Field");
     _validateFirstStage();
     _validateAsqtadLinks();
 
     double begin = usecond();
     
-    ThinLink = &U;
     _firstLevelSmearing();
     _secondLevelSmearing();
 
@@ -407,7 +398,7 @@ public: // implement Configuration interface
               << (usecond() - begin) 
               << " ms" 
               << std::endl; 
-    _linksReady = true;
+    this->fulfilled();
   }
 
   GaugeField& get_U(bool smeared = false) { 
@@ -425,7 +416,7 @@ public: // implement Configuration interface
       "require separate one-hop and Naik input derivatives "
       "and joint configuration pullback, which is not supported by "
       "Grid's legacy smearing interface. Enable the action's opt-in "
-      "link interface with useLinkMap() or bindLinks(); see relevant "
+      "link interface with contract(); see relevant "
       "documentation and code samples."
     );
   }

@@ -56,7 +56,6 @@ class StaggeredEvenEvenRational: public Action<typename Impl::GaugeField> {
  */
 public: 
   INHERIT_IMPL_TYPES(Impl);
-  using Action<GaugeField>::bindLinks;
 
 private:
   RealD _scale;
@@ -69,7 +68,7 @@ private:
   MultiShiftFunction NegOneQuarterAction;
   MultiShiftFunction NegOneQuarterDeriv;
 
-  LinkCoordinator<Impl> Links{&FermOp};
+  ActionContract<GaugeField> _contract;
 
 public:
   FermionField Phi;
@@ -155,13 +154,12 @@ public:
   }
 
 public: // opt-in link interface: needs documentation
-  void useLinkMap() { Links.useLinkMap(); }
-
-  void bindLinks(const void* op, const LinkBinding<GaugeField>& bind)
-  { Links.select(op, bind); }
- 
-  void bindLinks(const LinkBinding<GaugeField>& binding)
-  { bindLinks(FermOp.identity(), binding); }
+  void contract(Primals<GaugeField> primals) {
+    GRID_ASSERT(!primals.empty());
+    this->initializeContracts();
+    _contract = ActionContract<GaugeField>(FermOp.identity(), primals);
+    this->finalizeContracts();
+  }
 
 private:
   void _multiShiftSolve(
@@ -232,8 +230,8 @@ private:
     return innerProduct(Phi, Psi).real();            // Eqn (2)
   }
 
-  template <class Derivatives>
-  void _deriv(Derivatives& dSdU) {
+  template <class Derivative>
+  void _deriv(Derivative& dSdU) {
     /**
      * @brief Wirtinger derivative of pseudofermion action
      * @author Curtis Taylor Peterson
@@ -253,42 +251,57 @@ private:
     FermionField Chi(FermOp.FermionRedBlackGrid());
 
     _multiShiftSolve(NegOneQuarterDeriv, Phi, Psis); // Eqn (2a)***
+    dSdU = Zero();
     for (int i = 0; i < numPoles; ++i) {
       FermOp.Meooe(Psis[i], Chi); // Eqn (2b)***
 
-      auto eo = [&](auto& op, auto& out, const auto& in)  // Term 1***
-      { op.MeoDeriv(out, in, Psis[i], Chi, DaggerNo); };      
-      auto oe = [&](auto& op, auto& out, const auto& in)  // Term 2***
-      { op.MoeDeriv(out, in, Chi, Psis[i], DaggerYes); };      
+      auto eo = [&](auto& out) // Term 1***
+      { FermOp.MeoDeriv(out, Psis[i], Chi, DaggerNo); };
+      auto oe = [&](auto& out) // Term 2***
+      { FermOp.MoeDeriv(out, Chi, Psis[i], DaggerYes); };
 
-      dSdU.accumulate(FermOp, NegOneQuarterDeriv.residues[i], eo); // <-+- Eqn (1)***
-      dSdU.accumulate(FermOp, NegOneQuarterDeriv.residues[i], oe); // <-+
+      accumulate(dSdU, _contract, NegOneQuarterDeriv.residues[i], eo); // <-+- Eqn (1)***
+      accumulate(dSdU, _contract, NegOneQuarterDeriv.residues[i], oe); // <-+
     }
   }
 
 public:
   virtual void refresh(const GaugeField& U, GridSerialRNG& sRNG, GridParallelRNG& pRNG)
-  { Links.refresh(U, [&]{ _refresh(pRNG); }); }
+  { FermOp.ImportGauge(U); _refresh(pRNG); }
 
   virtual RealD S(const GaugeField& U) 
-  { return Links.action(U, [&]{ return _action(); }); }
+  { FermOp.ImportGauge(U); return _action(); }
 
-  virtual void deriv(const GaugeField& U, GaugeField& dSdU) 
-  { Links.deriv(U, dSdU, [&](auto& deriv){ _deriv(deriv); }); }
+  virtual void deriv(const GaugeField& U, GaugeField& UdSdU)
+  { FermOp.ImportGauge(U); _deriv(UdSdU); }
 
   virtual void refresh(
     ConfigurationBase<GaugeField>& U, 
     GridSerialRNG& sRNG, 
     GridParallelRNG& pRNG
-  ) { Links.refresh(U, this->is_smeared, [&]{ _refresh(pRNG); }); }
+  ) {
+    if (this->hasOptedIn()) { FermOp.ImportGauge(_contract); _refresh(pRNG); }
+    else { refresh(U.get_U(this->is_smeared), sRNG, pRNG); return; }
+  }
 
-  virtual RealD S(ConfigurationBase<GaugeField>& U) 
-  { return Links.action(U, this->is_smeared, [&]{ return _action(); }); }
+  virtual RealD S(ConfigurationBase<GaugeField>& U) {
+    if (this->hasOptedIn()) { FermOp.ImportGauge(_contract); return _action(); }
+    else { return S(U.get_U(this->is_smeared)); }
+  }
 
   virtual RealD Sinitial(ConfigurationBase<GaugeField>& U) { return S(U); }
 
-  virtual void deriv(ConfigurationBase<GaugeField>& U, GaugeField& dSdU) 
-  { Links.deriv(U, dSdU, this->is_smeared, [&](auto& deriv){ _deriv(deriv); }); }
+  virtual void deriv(ConfigurationBase<GaugeField>& U, GaugeField& UdSdU) {
+    if (this->hasOptedIn()) {
+      PrimalCotangentPairs<GaugeField> dSdU;
+      FermOp.ImportGauge(_contract);
+      _deriv(dSdU);
+      U.pullback(UdSdU, dSdU);
+    } else {
+      deriv(U.get_U(this->is_smeared), UdSdU);
+      if (this->is_smeared) { U.smeared_force(UdSdU); }
+    }
+  }
 };
 
 NAMESPACE_END(Grid);

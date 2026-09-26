@@ -207,8 +207,8 @@ int main(int argc, char **argv) {
   );
 
   HISQConfiguration<HMCWrapper::ImplPolicy> Policy(GridPtr);
-  LinkBinding<HMCWrapper::Field> LightStrangeLinks = Policy.links();
-  LinkBinding<HMCWrapper::Field> CharmLinks = Policy.links(CharmNaikEpsilon);
+  Primals<HMCWrapper::Field> LightStrangeLinks = Policy.promise();
+  Primals<HMCWrapper::Field> CharmLinks = Policy.promise(CharmNaikEpsilon);
 
   ////////////////////////////////////////////////////////////////
   // Full action
@@ -284,17 +284,19 @@ int main(int argc, char **argv) {
   // Count physical sea-quark flavors; the regulator determinants cancel.
   const int nf = LightParams.nf + StrangeParams.nf + CharmParams.nf;
   RealD u0 = Action.TadpoleFactor;
-  RealD RectangleCoefficient = oneLoopMILCRectangleCoefficient(u0, nf);
-  RealD ParallelogramCoefficient = oneLoopMILCParallelogramCoefficient(u0, nf);
   PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction<Gimpl> GaugeAction(
-    GridPtr, Action.BareGaugeCoupling, 1.0, RectangleCoefficient, ParallelogramCoefficient
+    GridPtr, 
+    Action.BareGaugeCoupling, 
+    1.0, 
+    oneLoopMILCRectangleCoefficient(u0, nf), 
+    oneLoopMILCParallelogramCoefficient(u0, nf)
   );
 
-  LightStrangePF.bindLinks(LightStrangeLinks, LightStrangeLinks, LightStrangeLinks);
-  RegulatorPF1.bindLinks(LightStrangeLinks);
-  RegulatorPF2.bindLinks(LightStrangeLinks);
-  RegulatorPF3.bindLinks(LightStrangeLinks);
-  CharmPF.bindLinks(CharmLinks);
+  LightStrangePF.contract(LightStrangeLinks, LightStrangeLinks, LightStrangeLinks);
+  RegulatorPF1.contract(LightStrangeLinks);
+  RegulatorPF2.contract(LightStrangeLinks);
+  RegulatorPF3.contract(LightStrangeLinks);
+  CharmPF.contract(CharmLinks);
 
   Level1.push_back(&LightStrangePF);
   Level1.push_back(&RegulatorPF1);

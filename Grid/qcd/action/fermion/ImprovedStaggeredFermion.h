@@ -86,10 +86,10 @@ public:
   ///////////////////////////////////
   // New opt-in derivative interface
   ///////////////////////////////////
-  void DhopDeriv(LinkDerivatives<GaugeField>&, const LinkInputs<GaugeField>&, const FermionField&, const FermionField&, int);
-  void DhopDerivOE(LinkDerivatives<GaugeField>&, const LinkInputs<GaugeField>&, const FermionField&, const FermionField&, int);
-  void DhopDerivEO(LinkDerivatives<GaugeField>&, const LinkInputs<GaugeField>&, const FermionField&, const FermionField&, int);
-  void DerivInternal(StencilImpl&, LinkDerivatives<GaugeField>&, const LinkInputs<GaugeField>&, const DoubledGaugeField&, const DoubledGaugeField&, const FermionField&, const FermionField&, int);
+  void DhopDeriv(PrimalCotangentPairs<GaugeField>&, const FermionField&, const FermionField&, int);
+  void DhopDerivOE(PrimalCotangentPairs<GaugeField>&, const FermionField&, const FermionField&, int);
+  void DhopDerivEO(PrimalCotangentPairs<GaugeField>&, const FermionField&, const FermionField&, int);
+  void DerivInternal(StencilImpl&, PrimalCotangentPairs<GaugeField>&, const DoubledGaugeField&, const DoubledGaugeField&, const FermionField&, const FermionField&, int);
 
   ///////////////////////////////////////////////////////////////
   // non-hermitian hopping term; half cb or both
@@ -140,7 +140,7 @@ public:
   void ImportGauge(const GaugeField &_Uthin, const GaugeField &_Ufat);
   void ImportGaugeSimple(const GaugeField &_UUU    ,const GaugeField &_U);
   void ImportGaugeSimple(const DoubledGaugeField &_UUU,const DoubledGaugeField &_U);
-  void ImportGauge(const LinkInputs<GaugeField>& inputs);
+  void ImportGauge(const ActionContract<GaugeField>& contract);
   DoubledGaugeField &GetU(void)   { return Umu ; } ;
   DoubledGaugeField &GetUUU(void) { return UUUmu; };
   void CopyGaugeCheckerboards(void);

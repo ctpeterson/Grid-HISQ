@@ -196,10 +196,12 @@ void ImprovedStaggeredFermion<Impl>::ImportGauge(
 }
 
 template <class Impl>
-void ImprovedStaggeredFermion<Impl>::ImportGauge(const LinkInputs<GaugeField>& in) {
-  in.conformable(_grid);
-  if (in.size() == 1) { ImportGauge(in[0]); } 
-  else if (in.size() == 2) { ImportGauge(in[0], in[1]); }
+void ImprovedStaggeredFermion<Impl>::ImportGauge(const ActionContract<GaugeField>& contract) {
+  GRID_ASSERT(contract.first == this->identity());
+  const auto& in = contract.second;
+  conformable(in, _grid);
+  if (in.size() == 1) { ImportGauge(in[0].resolve()); }
+  else if (in.size() == 2) { ImportGauge(in[0].resolve(), in[1].resolve()); }
   else { GRID_ASSERT(0 && "invalid port count"); }
 }
 
@@ -293,7 +295,7 @@ void ImprovedStaggeredFermion<Impl>::DerivInternal(
    * fermion bilinears directly from the doubled stores U and UUU, accumulating the
    * one-hop and three-hop contributions in mat.
    * 
-   * See the DerivInternal overload taking LinkDerivatives and LinkInputs for the
+   * See the tagged-field DerivInternal overload for the
    * shared notation and derivative conventions.
    *
    * link properties
@@ -356,8 +358,7 @@ void ImprovedStaggeredFermion<Impl>::DerivInternal(
 template <class Impl>
 void ImprovedStaggeredFermion<Impl>::DerivInternal(
   StencilImpl& stencil,
-  LinkDerivatives<GaugeField>& derivs, 
-  const LinkInputs<GaugeField>& links, 
+  PrimalCotangentPairs<GaugeField>& derivs,
   const DoubledGaugeField& U, // never used for computation
   const DoubledGaugeField& UUU,
   const FermionField& left, 
@@ -453,9 +454,11 @@ void ImprovedStaggeredFermion<Impl>::DerivInternal(
    * knocks out the constant mass term).
    */
   GRID_ASSERT(dag == DaggerNo || dag == DaggerYes);
-  GRID_ASSERT(links.size() == 1 || links.size() == 2);
+  GRID_ASSERT(derivs.size() == 1 || derivs.size() == 2);
+  
+  conformable(derivs, _grid);
 
-  const std::size_t oneHopPort = links.size() - 1; // single-port branch compatibility
+  const std::size_t oneHopPort = derivs.size() - 1; // single-port branch compatibility
   const std::size_t threeHopPort = 0;
 
   GridBase* GaugeGrid = U.Grid();
@@ -468,6 +471,8 @@ void ImprovedStaggeredFermion<Impl>::DerivInternal(
 
   stencil.HaloExchange(right, compressor);
 
+  derivs = Zero();
+
   if (c1 != 0.0) {
     GaugeField X(GaugeGrid);
 
@@ -479,7 +484,7 @@ void ImprovedStaggeredFermion<Impl>::DerivInternal(
     // one-hop Wirtinger derivative; Eqn (4)
     for (int mu = 0; mu < Nd; ++mu) {
       Kernels::DhopDirForward(stencil, X, right, rightTilde, mu, 0);
-      derivs.template pokeIndex<LorentzIndex>(this->outer(rightTilde, left), mu, oneHopPort);
+      pokeLorentz(derivs[oneHopPort], this->outer(rightTilde, left), mu);
     }
 
     // reimposition of Dirichlet masks contributing to m_{1-hop,mu}(n); Eqn (4)
@@ -487,29 +492,31 @@ void ImprovedStaggeredFermion<Impl>::DerivInternal(
   }
 
   if (c2 != 0.0) {
-    GaugeField W = links[threeHopPort];
+    const GaugeField& W = derivs[threeHopPort].gauge();
     GaugeLinkField cmp(_grid);
-    auto derivs3 = LinkDerivatives<GaugeField>::fromInputs(LinkInputs<GaugeField>({&W}));
+    PrimalCotangentPair<GaugeField> threeHop(derivs[threeHopPort].primal());
 
     for (int mu = 0; mu < Nd; ++mu) {
       GaugeLinkField w = peekLorentz(W, mu);
 
       // first term - same structure as one-hop contribution; Eqn (7)
       Kernels::DhopDirForward(stencil, UUU, right, rightTilde, mu, 1);
-      derivs3.template pokeIndex<LorentzIndex>(this->outer(rightTilde, left), mu, threeHopPort);
+      pokeLorentz(threeHop, this->outer(rightTilde, left), mu);
+      GaugeLinkField component = peekLorentz(threeHop, mu);
 
       // second term - requires communication, but necessary; Eqn (6)
-      cmp = Cshift(adj(w)*peekLorentz(derivs3[threeHopPort], mu)*w, mu, -1);
-      derivs3.template addIndex<LorentzIndex>(cmp, mu, threeHopPort);
+      cmp = Cshift(adj(w)*component*w, mu, -1);
+      component += cmp;
 
       // third term - requires communication, but necessary; Eqn (6)
       cmp = Cshift(adj(w)*cmp*w, mu, -1);
-      derivs3.template addIndex<LorentzIndex>(cmp, mu, threeHopPort);
+      component += cmp;
 
-      // accumulate three-hop contributions into the main derivative object; Eqn (8)
-      cmp = adj(w)*peekLorentz(derivs3[threeHopPort], mu);
-      derivs.template addIndex<LorentzIndex>(cmp, mu, threeHopPort);
-  } }
+      pokeLorentz(threeHop, adj(w)*component, mu);
+    }
+    // accumulate three-hop contributions into the main derivative object; Eqn (8)
+    derivs[threeHopPort] += threeHop;
+  }
 
   if (dag == DaggerYes) { derivs *= -1; }
 }
@@ -528,18 +535,14 @@ void ImprovedStaggeredFermion<Impl>::DhopDeriv(GaugeField &mat, const FermionFie
 
 template <class Impl>
 void ImprovedStaggeredFermion<Impl>::DhopDeriv(
-  LinkDerivatives<GaugeField>& derivs,
-  const LinkInputs<GaugeField>& links,
+  PrimalCotangentPairs<GaugeField>& derivs,
   const FermionField& left,
   const FermionField& right,
   int dag
 ) {
   conformable(left.Grid(), _grid);
   conformable(left.Grid(), right.Grid());
-  links.conformable(_grid);
-
-  derivs = LinkDerivatives<GaugeField>::fromInputs(links);
-  DerivInternal(Stencil, derivs, links, Umu, UUUmu, left, right, dag);
+  DerivInternal(Stencil, derivs, Umu, UUUmu, left, right, dag);
 } 
 
 template <class Impl>
@@ -556,8 +559,7 @@ void ImprovedStaggeredFermion<Impl>::DhopDerivOE(
 
 template <class Impl>
 void ImprovedStaggeredFermion<Impl>::DhopDerivOE(
-  LinkDerivatives<GaugeField>& derivs,
-  const LinkInputs<GaugeField>& links,
+  PrimalCotangentPairs<GaugeField>& derivs,
   const FermionField& left,
   const FermionField& right,
   int dag
@@ -571,10 +573,7 @@ void ImprovedStaggeredFermion<Impl>::DhopDerivOE(
 
   conformable(left.Grid(), _cbgrid);
   conformable(left.Grid(), right.Grid());
-  links.conformable(_grid);
-
-  derivs = LinkDerivatives<GaugeField>::fromInputs(links);
-  DerivInternal(StencilEven, derivs, links, UmuOdd, UUUmuOdd, left, right, dag);
+  DerivInternal(StencilEven, derivs, UmuOdd, UUUmuOdd, left, right, dag);
 } 
 
 template <class Impl>
@@ -591,8 +590,7 @@ void ImprovedStaggeredFermion<Impl>::DhopDerivEO(
 
 template <class Impl>
 void ImprovedStaggeredFermion<Impl>::DhopDerivEO(
-  LinkDerivatives<GaugeField>& derivs,
-  const LinkInputs<GaugeField>& links,
+  PrimalCotangentPairs<GaugeField>& derivs,
   const FermionField& left,
   const FermionField& right,
   int dag
@@ -606,10 +604,7 @@ void ImprovedStaggeredFermion<Impl>::DhopDerivEO(
 
   conformable(left.Grid(), _cbgrid);
   conformable(left.Grid(), right.Grid());
-  links.conformable(_grid);
-
-  derivs = LinkDerivatives<GaugeField>::fromInputs(links);
-  DerivInternal(StencilOdd, derivs, links, UmuEven, UUUmuEven, left, right, dag);
+  DerivInternal(StencilOdd, derivs, UmuEven, UUUmuEven, left, right, dag);
 } 
 
 template <class Impl>
