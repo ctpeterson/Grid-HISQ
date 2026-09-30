@@ -50,19 +50,16 @@ class Primal {
 private: 
   const ConfigurationBase<Field>* _owner;
   std::size_t _id;
-  const Field* _ptr; 
 
 public:
-  Primal(const ConfigurationBase<Field>* owner, std::size_t id, const Field& field):
-    _owner(owner), _id(id), _ptr(&field) { GRID_ASSERT(!field.Grid()->_isCheckerBoarded); }
-  explicit Primal(const Field& field): Primal(nullptr, 0, field) { }
+  Primal(const ConfigurationBase<Field>* owner, std::size_t id): _owner(owner), _id(id) { }
   Primal(const Primal&) = default;
   Primal(Primal&&) = default;
 
 public:
   const ConfigurationBase<Field>* owner() const { return _owner; }
   std::size_t id() const { return _id; }
-  const Field& resolve() const { return *_ptr; }
+  const Field resolve() const { return _owner->resolve(_id); }
 
 public:
   Primal& operator=(const Primal&) = delete;
@@ -104,7 +101,7 @@ public:
 public:
   const Primal<Field>& primal() const { return _primal; }
   
-  const Field& gauge() const { return _primal.resolve(); }
+  const Field gauge() const { return _primal.resolve(); }
   
 public:
   PrimalCotangentPair& operator=(const Zero&)
@@ -223,6 +220,7 @@ public: // opting in means implementing these virtual methods
   virtual void pullback(Field&, PrimalCotangentPairs<Field>&) const { _hasNotOptedIn(); }
   virtual Primal<Field> primal(std::size_t id) const { _hasNotOptedIn(); }
   virtual const Field& fundamental() const { _hasNotOptedIn(); }
+  virtual const Field resolve(std::size_t id) const { _hasNotOptedIn(); }
 
 public:
   PrimalCotangentPair<Field> pair(const Primal<Field>& p) const
