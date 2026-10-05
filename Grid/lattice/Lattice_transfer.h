@@ -230,7 +230,7 @@ accelerator_inline void convertType(iVector<T1,N> & out, const iVector<T2,N> & i
 }
 
 template<typename T1,typename T2>
-accelerator_inline void convertType(Lattice<T1> & out, const Lattice<T2> & in) {
+inline void convertType(Lattice<T1> & out, const Lattice<T2> & in) {
   autoView( out_v , out,AcceleratorWrite);
   autoView( in_v  , in ,AcceleratorRead);
   accelerator_for(ss,out_v.size(),T1::Nsimd(),{
