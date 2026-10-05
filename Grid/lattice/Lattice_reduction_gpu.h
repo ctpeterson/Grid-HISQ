@@ -2,11 +2,11 @@ NAMESPACE_BEGIN(Grid);
 
 #ifdef GRID_HIP
 extern hipDeviceProp_t *gpu_props;
-#define WARP_SIZE 64
+//#define WARP_SIZE 64
 #endif
 #ifdef GRID_CUDA
 extern cudaDeviceProp *gpu_props;
-#define WARP_SIZE 32
+//#define WARP_SIZE 32
 #endif
 
 __device__ unsigned int retirementCount = 0;
@@ -44,7 +44,8 @@ int getNumBlocksAndThreads(const Iterator n, const size_t sizeofsobj, Iterator &
   std::cout << GridLogDebug << "\tmaxThreadsPerBlock  = " << maxThreadsPerBlock << std::endl;
   std::cout << GridLogDebug << "\tmultiProcessorCount = " << multiProcessorCount << std::endl;
   */  
-  if (warpSize != WARP_SIZE) {
+  //if (warpSize != WARP_SIZE) {
+  if (warpSize != 32 && warpSize != 64) {
     std::cout << GridLogError << "The warp size of the GPU in use does not match the warp size set when compiling Grid." << std::endl;
     exit(EXIT_FAILURE);
   }
@@ -70,7 +71,7 @@ __device__ void reduceBlock(volatile sobj *sdata, sobj mySum, const Iterator tid
   memcpy((void *)&sdata[tid], (void *)&mySum, sizeof(sobj));
   acceleratorSynchronise();
   
-  const Iterator VEC = WARP_SIZE;
+  const Iterator VEC = warpSize;
   const Iterator vid = tid & (VEC-1);
   
   sobj beta, temp;
