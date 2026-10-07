@@ -227,20 +227,7 @@ class GaugeGroup {
   static void GaussianFundamentalLieAlgebraMatrix(GridParallelRNG &pRNG,
                                                   LatticeMatrix &out,
                                                   Real scale = 1.0) {
-    GridBase *grid = out.Grid();
-    LatticeReal ca(grid);
-    LatticeMatrix la(grid);
-    Complex ci(0.0, scale);
-    Matrix ta;
-
-    out = Zero();
-    for (int a = 0; a < AlgebraDimension; a++) {
-      gaussian(pRNG, ca);
-      generator(a, ta);
-      la = toComplex(ca) * ta;
-      out += la;
-    }
-    out *= ci;
+    gaussianFundamentalLieAlgebraMatrix<GaugeGroup>(pRNG, out, scale);
   }
 
   static void FundamentalLieAlgebraMatrix(const LatticeAlgebraVector &h,

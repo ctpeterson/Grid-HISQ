@@ -320,6 +320,14 @@ public:
     header.floating_point = std::string("UINT64");
     header.data_type      = std::string("SITMO");
 #endif
+#ifdef RNG_MILC
+    header.floating_point = "UINT32";
+    header.data_type      = "MILC";
+#endif
+#ifdef RNG_MILCV6
+    header.floating_point = "UINT32";
+    header.data_type      = "MILCV6";
+#endif
 
 	if ( grid->IsBoss() ) { 
     truncate(file);
@@ -365,6 +373,14 @@ public:
 #ifdef RNG_SITMO
     GRID_ASSERT(format == std::string("UINT64"));
     GRID_ASSERT(data_type == std::string("SITMO"));
+#endif
+#ifdef RNG_MILC
+    GRID_ASSERT(format == "UINT32");
+    GRID_ASSERT(data_type == "MILC");
+#endif
+#ifdef RNG_MILCV6
+    GRID_ASSERT(format == "UINT32");
+    GRID_ASSERT(data_type == "MILCV6");
 #endif
 
     // depending on datatype, set up munger;

@@ -766,7 +766,7 @@ AM_CONDITIONAL(BUILD_COMMS_MPI3,  [ test "${comms_type}X" == "mpi3X" ] )
 AM_CONDITIONAL(BUILD_COMMS_NONE,  [ test "${comms_type}X" == "noneX" ])
 
 ############### RNG selection
-AC_ARG_ENABLE([rng],[AS_HELP_STRING([--enable-rng=ranlux48|mt19937|sitmo],[\
+AC_ARG_ENABLE([rng],[AS_HELP_STRING([--enable-rng=ranlux48|mt19937|sitmo|milc|milcv6],[\
 	            Select Random Number Generator to be used])],\
 	            [ac_RNG=${enable_rng}],[ac_RNG=sitmo])
 
@@ -779,6 +779,12 @@ case ${ac_RNG} in
      ;;
      sitmo)
       AC_DEFINE([RNG_SITMO],[1],[RNG_SITMO] )
+     ;;
+     milc)
+      AC_DEFINE([RNG_MILC],[1],[MILC version 7 RNG])
+     ;;
+     milcv6)
+      AC_DEFINE([RNG_MILCV6],[1],[MILC version 6 RNG])
      ;;
      *)
       AC_MSG_ERROR([${ac_RNG} unsupported --enable-rng option]);

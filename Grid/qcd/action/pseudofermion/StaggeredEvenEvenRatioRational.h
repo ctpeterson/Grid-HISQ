@@ -225,20 +225,19 @@ private:
      * @details
      * Given the action of Eqn (1) in the class documentation, one wishes to generate 
      * a pseudofermion field Phi as
-     * (1) Phi = (N^dag N)^{-Nf/8} (D^dag D)^{Nf/8} eta |_{even}.
-     * As described in FourFlavorStaggeredEvenEvenPseudoFermionAction::_refresh,
-     * we start off by producing a Gaussian full field eta scaled by sqrt(1/2), with
-     * (2) P(eta) ~ exp(-eta^dag eta),
+     * (1) Phi = (N^dag N)^{-Nf/8} (D^dag D)^{Nf/8} Eta.
+     * We start off by producing a Gaussian field Eta on the even sites,
+     * scaled by sqrt(1/2), with
+     * (2) P(Eta) ~ exp(-Eta^dag Eta),
      * then obtain Phi using two multi-shift solves for the rational approximations:
      * first the positive denominator power, then the negative numerator power.
      */
-    FermionField eta(NumOp.FermionGrid());
     FermionField EtaEven(NumOp.FermionRedBlackGrid());
     FermionField tmp(NumOp.FermionRedBlackGrid());
 
-    gaussian(pRNG, eta);
-    eta *= _scale; // Eqn (2)
-    pickCheckerboard(Even, EtaEven, eta);
+    EtaEven.Checkerboard() = Even;
+    gaussian(pRNG, EtaEven);
+    EtaEven *= _scale; // Eqn (2)
 
     _multiShiftSolve(Den, OneEighthDenAction, EtaEven, tmp); // <-+- Eqn (1)
     _multiShiftSolve(Num, NegOneEighthNumAction, tmp, Phi);  // <-+

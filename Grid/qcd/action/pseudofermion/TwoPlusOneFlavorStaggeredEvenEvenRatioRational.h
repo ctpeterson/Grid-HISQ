@@ -265,21 +265,19 @@ private:
      * @author Curtis Taylor Peterson
      * @details
      * For Eqn (2) in the class documentation, generate
-     * (1) Phi = Q_n^(-N_n/8) Q_2^(N_2/8) Q_1^(N_1/8) eta |_{even},
-     * where P(eta) ~ exp(-eta^dag eta). The order inverts the factors of
-     * the action without assuming commutation. As in the four-flavor action,
-     * generate full-field Gaussian noise, scale by sqrt(1/2), and select even.
+     * (1) Phi = Q_n^(-N_n/8) Q_2^(N_2/8) Q_1^(N_1/8) Eta,
+     * where P(Eta) ~ exp(-Eta^dag Eta). The order inverts the factors of
+     * the action without assuming commutation. Generate Gaussian noise on
+     * the even sites and scale by sqrt(1/2).
      */
-    FermionField eta(Den1Op.FermionGrid());
-    FermionField EtaEven(Den1Op.FermionRedBlackGrid());
+    FermionField Eta(Den1Op.FermionRedBlackGrid());
     FermionField X(Den1Op.FermionRedBlackGrid());
     FermionField Y(Den1Op.FermionRedBlackGrid());
 
-    gaussian(pRNG, eta);
-    eta *= _scale;
-    pickCheckerboard(Even, EtaEven, eta);
+    gaussian(pRNG, Eta);
+    Eta *= _scale;
 
-    _multiShiftSolve(Den1Op, _den1Params, OneEighthDen1Action, EtaEven, X);
+    _multiShiftSolve(Den1Op, _den1Params, OneEighthDen1Action, Eta, X);
     _multiShiftSolve(Den2Op, _den2Params, OneEighthDen2Action, X, Y);
     _multiShiftSolve(NumOp, _numParams, NegOneEighthNumAction, Y, Phi);
   }
