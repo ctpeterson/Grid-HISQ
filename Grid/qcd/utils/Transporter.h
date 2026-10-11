@@ -1,6 +1,6 @@
 /*************************************************************************************
 Grid physics library, www.github.com/paboyle/Grid
-Source file: ./lib/qcd/utils/Transporters.h
+Source file: ./lib/qcd/utils/Transporter.h
 Author: Curtis Taylor Peterson <curtistaylorpetersonwork@gmail.com>
 
 Copyright (C) 2023 
@@ -25,7 +25,7 @@ directory
 /*  END LEGAL */
 
 /**
- * @file PeriodicTranspoerters.h
+ * @file Transporter.h
  * @brief Interface for periodic gauge transporters
  * @author Curtis Taylor Peterson
  * @details
@@ -35,8 +35,8 @@ directory
 #pragma once 
 #include <Grid/perfmon/Tracing.h>
 
-#ifndef QCD_UTILS_PERIODIC_TRANSPORTERS_H
-#define QCD_UTILS_PERIODIC_TRANSPORTERS_H
+#ifndef QCD_UTILS_PERIODIC_TRANSPORTER_H
+#define QCD_UTILS_PERIODIC_TRANSPORTER_H
 
 NAMESPACE_BEGIN(Grid);
 
@@ -77,152 +77,40 @@ inline const typename x<Gimpl>::GaugeLinkField x<Gimpl> \
 enum TransportHeading {FORWARD = 0, BACKWARD = Nd};
 
 //
-// periodic transporter definition
+// periodic transporter stencil definition
 //
 
-template <class Gimpl>
-class Transporter: public Gimpl {
-/**
- * @brief periodic gauge transporter
- * @author Curtis Taylor Peterson
- * @details
- * Represents periodic transport operations needed for building up common gauge 
- * link constructs. 
- */
-public: INHERIT_GIMPL_TYPES(Gimpl)
+// for stencil caching
+struct TransporterStencil {
+  std::vector<std::shared_ptr<GeneralLocalStencil>> _axialStencil;
+  std::vector<std::vector<std::shared_ptr<GeneralLocalStencil>>> _planarStencil;
 
-private:
-  int depth, mu;
-  std::shared_ptr<GeneralLocalStencil> _stencil;
-  std::unique_ptr<GaugeLinkField> _link;
-
-public:
-  /** @brief default Transporter constructor */
-  Transporter() { _stencil.reset(); _link.reset(); }
-
-  /** @brief main Transporter constructor */
-  Transporter(
-    GridBase* grid, 
-    const GaugeLinkField& link, 
-    int mu,
-    int depth
-  ): mu(mu), depth(depth) {
+  void axialStencil(GridBase* grid, int depth) {
     GridCartesian* cgrid = (GridCartesian*)grid;
-    std::vector<Coordinate> shifts;
-    Coordinate backward(Nd, 0);
-    Coordinate forward(Nd, 0);
-    Coordinate noshift(Nd, 0);
+    _axialStencil.clear();
 
-    backward[mu] = -depth;
-    forward[mu] = depth;
+    for (int mu = 0; mu < Nd; ++mu) {
+      std::vector<Coordinate> shifts;
+      Coordinate backward(Nd, 0);
+      Coordinate forward(Nd, 0);
+      Coordinate noshift(Nd, 0);
 
-    shifts.push_back(backward);
-    shifts.push_back(forward);
-    shifts.push_back(noshift);
+      backward[mu] = -depth;
+      forward[mu] = depth;
 
-    _stencil = std::make_unique<GeneralLocalStencil>(GeneralLocalStencil(cgrid, shifts));
-    _link = std::make_unique<GaugeLinkField>(link);
+      shifts.push_back(backward);
+      shifts.push_back(forward);
+      shifts.push_back(noshift);
+
+      _axialStencil.push_back(
+        std::make_shared<GeneralLocalStencil>(GeneralLocalStencil(cgrid, shifts))
+      );
+    }
   }
 
-// accessors
-public:
-  /** @brief return copy of input buffer */
-  inline const GaugeLinkField link() { return *_link; }
-
-  /** @brief return copy of general local stencil */
-  inline const GeneralLocalStencil stencil() { return *_stencil; }
-
-// covariant shifts
-public:
-  inline const GaugeLinkField CovShift(
-    const GaugeLinkField& u,
-    const GaugeLinkField& v, 
-    TransportHeading heading
-  );
-
-  inline const GaugeLinkField CovShift(
-    const GaugeLinkField& v, 
-    TransportHeading heading
-  );
-
-  inline const GaugeLinkField CovShiftFwd(
-    const GaugeLinkField& u, 
-    const GaugeLinkField& v
-  );
-
-  inline const GaugeLinkField CovShiftFwd(const GaugeLinkField& v);
-
-  inline const GaugeLinkField CovShiftFwd();
-
-  inline const GaugeLinkField CovShiftBck(
-    const GaugeLinkField& u, 
-    const GaugeLinkField& v
-  );
-
-  inline const GaugeLinkField CovShiftBck(const GaugeLinkField& v);
-
-  inline const GaugeLinkField CovShiftBck();
-
-// cartesian shifts
-public:
-  inline const GaugeLinkField Cshift(
-    const GaugeLinkField& v, 
-    TransportHeading heading
-  );
-
-  inline const GaugeLinkField CovShiftIdent(
-    const GaugeLinkField& v, 
-    TransportHeading heading
-  );
-
-  inline const GaugeLinkField CovShiftIdentFwd(const GaugeLinkField& v);
-
-  inline const GaugeLinkField CovShiftIdentBck(const GaugeLinkField& v);
-};
-
-//
-// periodic transporter container definition
-//
-
-template <class Gimpl>
-class Transporters: public Gimpl {
-/**
- * @brief Transporter container
- * @author Curtis Taylor Peterson
- * @details
- * Naive container for saving and indexing a collection of Transporters. 
- * Note of caution: all periodic gauge transporters use the same buffer for the 
- * stencil and the outputs.
- */
-
-public: INHERIT_GIMPL_TYPES(Gimpl)
-
-private:
-  int depth;
-
-  GridBase* _pgrid;
-  PaddedCell* _pcell;
-  
-  std::shared_ptr<GeneralLocalStencil> _stencil;
-  std::vector<std::vector<std::shared_ptr<GeneralLocalStencil>>> _stencils;
-  
-  Transporter<Gimpl> _transporter[Nd];
-
-public:
-  Transporters(PaddedCell& pcell, const GaugeField& Uin): depth(pcell.depth) {
-    auto U = pcell.ExchangePeriodic(Uin);
-    std::vector<Coordinate> shifts;
-
-    // construct transporters
-    
-    _pcell = &pcell;
-    _pgrid = (GridBase*)_pcell->grids.back();
-    for (int mu = 0; mu < Nd; ++mu) 
-      _transporter[mu] = Transporter<Gimpl>(_pgrid, toLink(U, mu), mu, depth);
-
-    // construct mu-nu stencils
-    
-    GridCartesian* cgrid = (GridCartesian*)_pgrid;
+  void planarStencil(GridBase* grid, int depth) {
+    GridCartesian* cgrid = (GridCartesian*)grid;
+    _planarStencil.clear();
 
     for (int mu = 0; mu < Nd; ++mu) {
       std::vector<std::shared_ptr<GeneralLocalStencil>> stencils;
@@ -256,8 +144,80 @@ public:
         );
       }
 
-      _stencils.push_back(stencils);
+      _planarStencil.push_back(stencils);
     }
+  }
+
+  TransporterStencil() { }
+
+  TransporterStencil(GridBase* grid, int depth)
+  { axialStencil(grid, depth); planarStencil(grid, depth); }
+
+  TransporterStencil(
+    const std::vector<std::shared_ptr<GeneralLocalStencil>>& axial,
+    const std::vector<std::vector<std::shared_ptr<GeneralLocalStencil>>>& planar
+  ): _axialStencil(axial), _planarStencil(planar) { }
+
+  /** @brief return a read-only reference to the axial stencil */
+  inline const GeneralLocalStencil& stencil(int mu) const
+  { return *(_axialStencil[mu]); }
+
+  /** @brief return a read-only reference to the planar stencil */
+  inline const GeneralLocalStencil& stencil(int mu, int nu) const
+  { return *(_planarStencil[mu][nu]); }
+};
+
+//
+// periodic transporter definition
+//
+
+template <class Gimpl>
+class Transporter: public Gimpl {
+/**
+ * @brief periodic gauge transporter
+ * @author Curtis Taylor Peterson
+ * @details
+ * Represents periodic transport operations needed for building up common gauge
+ * link constructs. Stores the directional links and their axial and planar
+ * stencils.
+ */
+
+public: INHERIT_GIMPL_TYPES(Gimpl)
+
+private:
+  int depth;
+
+  GridBase* _pgrid;
+  PaddedCell* _pcell;
+  
+  TransporterStencil _stencil;
+  std::unique_ptr<GaugeLinkField> _link[Nd];
+
+public:
+  Transporter(PaddedCell& pcell, const GaugeField& Uin): depth(pcell.depth) {
+    auto U = pcell.ExchangePeriodic(Uin);
+
+    // construct links
+    _pcell = &pcell;
+    _pgrid = (GridBase*)_pcell->grids.back();
+    for (int mu = 0; mu < Nd; ++mu) { _link[mu] = std::make_unique<GaugeLinkField>(toLink(U, mu)); }
+
+    // construct axial and planar stencils
+    _stencil = TransporterStencil(_pgrid, depth);
+  }
+
+  /** @brief reuse stencils for the same padded grid layout and depth */
+  Transporter(
+    PaddedCell& pcell,
+    const GaugeField& Uin,
+    const TransporterStencil& stencil
+  ): depth(pcell.depth), _stencil(stencil) {
+    auto U = pcell.ExchangePeriodic(Uin);
+
+    // construct links
+    _pcell = &pcell;
+    _pgrid = (GridBase*)_pcell->grids.back();
+    for (int mu = 0; mu < Nd; ++mu) { _link[mu] = std::make_unique<GaugeLinkField>(toLink(U, mu)); }
   }
 
 private:
@@ -306,26 +266,26 @@ public:
 
   /** @brief directional halo exchange -- single dimension */
   inline GaugeLinkField exchange(GaugeLinkField u, int dim) {
-    tracePush("Transporters::exchange(dim)");
+    tracePush("Transporter::exchange(dim)");
     refresh(u, dim);
-    tracePop("Transporters::exchange(dim)");
+    tracePop("Transporter::exchange(dim)");
     return u;
   }
 
   /** @brief directional halo exchange -- two dimensions */
   inline GaugeLinkField exchange(GaugeLinkField u, int dim1, int dim2) {
-    tracePush("Transporters::exchange(dim1,dim2)");
+    tracePush("Transporter::exchange(dim1,dim2)");
     refresh(u, dim1);
     refresh(u, dim2);
-    tracePop("Transporters::exchange(dim1,dim2)");
+    tracePop("Transporter::exchange(dim1,dim2)");
     return u;
   }
 
   /** @brief full halo exchange */
   inline GaugeLinkField exchange(const GaugeLinkField& u) { 
-    tracePush("Transporters::exchange");
+    tracePush("Transporter::exchange");
     GaugeLinkField result = toPaddedGrid(toTightGrid(u)); 
-    tracePop("Transporters::exchange");
+    tracePop("Transporter::exchange");
     return result;
   }
 
@@ -333,85 +293,108 @@ public:
   void append(GaugeLinkField& u, const GaugeLinkField& du) 
   { u += du; u = exchange(u); }
 
+// accessors
 public:
-  /** @brief index transporters -- mutable */
-  inline Transporter<Gimpl>& operator[](int mu) { return _transporter[mu]; }
+  /** @brief return a read-only reference to the transporter's input buffer */
+  inline const GaugeLinkField& link(int mu) const { return *(_link[mu]); }
 
-  /** @brief index transporters -- not mutable */
-  inline const Transporter<Gimpl>& operator[](int mu) const 
-  { return _transporter[mu]; }
+  /** @brief return whole stencil */
+  inline const TransporterStencil& stencil() const { return _stencil; }
 
+  /** @brief return a read-only reference to the axial stencil */
+  inline const GeneralLocalStencil& stencil(int mu) const
+  { return _stencil.stencil(mu); }
+
+  /** @brief return a read-only reference to the planar stencil */
+  inline const GeneralLocalStencil& stencil(int mu, int nu) const
+  { return _stencil.stencil(mu, nu); }
+
+// covariant shifts
 public:
-  /** @brief return copy of input buffer for transporter */
-  inline const GaugeLinkField link(int mu) { return _transporter[mu].link(); }
+  inline const GaugeLinkField CovShift(
+    int mu,
+    const GaugeLinkField& u,
+    const GaugeLinkField& v,
+    TransportHeading heading
+  );
 
-  /** @breif return copy of general local stencil from transporters */
-  inline const GeneralLocalStencil stencil(int mu) 
-  { return _transporter[mu].stencil(); }
+  inline const GaugeLinkField CovShift(
+    int mu,
+    const GaugeLinkField& v,
+    TransportHeading heading
+  );
 
-  /** @brief return copy of general local stencil for mu-nu pairs */
-  inline const GeneralLocalStencil stencil(int mu, int nu) 
-  { return *(_stencils[mu][nu]); }
-
-public:
   inline const GaugeLinkField CovShiftFwd(
     int mu, 
     const GaugeLinkField& u, 
     const GaugeLinkField& v
-  ) { return _transporter[mu].CovShiftFwd(u, v); }
+  ) { return CovShift(mu, u, v, FORWARD); }
 
   inline const GaugeLinkField CovShiftFwd(
     int mu, 
     const GaugeLinkField& v
-  ) { return _transporter[mu].CovShiftFwd(v); }
+  ) { return CovShift(mu, link(mu), v, FORWARD); }
 
   inline const GaugeLinkField CovShiftFwd(
     int mu, 
     int nu
-  ) { return _transporter[mu].CovShiftFwd(link(nu)); }
+  ) { return CovShift(mu, link(mu), link(nu), FORWARD); }
 
   inline const GaugeLinkField CovShiftFwd(int mu) 
-  { return _transporter[mu].CovShiftFwd(); }
+  { return CovShift(mu, link(mu), link(mu), FORWARD); }
 
   inline const GaugeLinkField CovShiftBck(
     int mu,
     const GaugeLinkField& u, 
     const GaugeLinkField& v
-  ) { return _transporter[mu].CovShiftBck(u, v); }
+  ) { return CovShift(mu, u, v, BACKWARD); }
 
   inline const GaugeLinkField CovShiftBck(
     int mu, 
     const GaugeLinkField& v
-  ) { return _transporter[mu].CovShiftBck(v); }
+  ) { return CovShift(mu, link(mu), v, BACKWARD); }
 
   inline const GaugeLinkField CovShiftBck(
     int mu, 
     int nu
-  ) { return _transporter[mu].CovShiftBck(link(nu)); }
+  ) { return CovShift(mu, link(mu), link(nu), BACKWARD); }
 
   inline const GaugeLinkField CovShiftBck(int mu) 
-  { return _transporter[mu].CovShiftBck(); }
+  { return CovShift(mu, link(mu), link(mu), BACKWARD); }
 
+// cartesian shifts
 public:
+  inline const GaugeLinkField Cshift(
+    int mu,
+    const GaugeLinkField& v,
+    TransportHeading heading
+  );
+
+  inline const GaugeLinkField CovShiftIdent(
+    int mu,
+    const GaugeLinkField& v,
+    TransportHeading heading
+  );
+
   inline const GaugeLinkField CovShiftIdentFwd(
     int mu, 
     const GaugeLinkField& v
-  ) { return _transporter[mu].CovShiftIdentFwd(v); }
+  ) { return Cshift(mu, v, FORWARD); }
 
   inline const GaugeLinkField CovShiftIdentBck(
     int mu, 
     const GaugeLinkField& v
-  ) { return _transporter[mu].CovShiftIdentBck(v); }
+  ) { return Cshift(mu, v, BACKWARD); }
 
   inline const GaugeLinkField CovShiftIdentFwd(
     int mu, 
     int nu
-  ) { return _transporter[mu].CovShiftIdentFwd(link(nu)); }
+  ) { return Cshift(mu, link(nu), FORWARD); }
 
   inline const GaugeLinkField CovShiftIdentBck(
     int mu, 
     int nu
-  ) { return _transporter[mu].CovShiftIdentBck(link(nu)); }
+  ) { return Cshift(mu, link(nu), BACKWARD); }
 
 public:
   inline const GaugeLinkField reverse(
@@ -631,6 +614,7 @@ public:
 
 /** @brief application of gauge transporter to operand field */
 IMPL(Transporter)::CovShift(
+  int mu,
   const GaugeLinkField& u,
   const GaugeLinkField& v, 
   TransportHeading heading
@@ -642,7 +626,7 @@ IMPL(Transporter)::CovShift(
 
   tracePush("Transporter::CovShift");
   ACCELERATOR_SCOPE(
-    GeneralLocalStencilView s_v = stencil().View(AcceleratorRead);
+    GeneralLocalStencilView s_v = stencil(mu).View(AcceleratorRead);
     autoView(v_v, v, AcceleratorRead);
     autoView(u_v, u, AcceleratorRead);
     autoView(f_v, f, AcceleratorWrite);
@@ -663,37 +647,13 @@ IMPL(Transporter)::CovShift(
 }
 
 /** @brief application of gauge transporter to operand field */
-IMPL(Transporter)::CovShift(const GaugeLinkField& v, TransportHeading heading) 
-{ return CovShift(link(), v, heading); }
-
-/** @brief application of gauge transporter to operand field */
-IMPL(Transporter)::CovShiftFwd(const GaugeLinkField& u, const GaugeLinkField& v) 
-{ return CovShift(u, v, FORWARD); }
-
-/** @brief application of gauge transporter to operand field */
-IMPL(Transporter)::CovShiftFwd(const GaugeLinkField& v) 
-{ return CovShift(link(), v, FORWARD); }
-
-/** @brief application of gauge transporter to operand field */
-IMPL(Transporter)::CovShiftFwd() 
-{ return CovShift(link(), link(), FORWARD); }
-
-/** @brief application of gauge transporter to operand field */
-IMPL(Transporter)::CovShiftBck(const GaugeLinkField& u, const GaugeLinkField& v) 
-{ return CovShift(u, v, BACKWARD); }
-
-/** @brief application of gauge transporter to operand field */
-IMPL(Transporter)::CovShiftBck(const GaugeLinkField& v) 
-{ return CovShift(link(), v, BACKWARD); }
-
-/** @brief application of gauge transporter to operand field */
-IMPL(Transporter)::CovShiftBck() 
-{ return CovShift(link(), link(), BACKWARD); }
+IMPL(Transporter)::CovShift(int mu, const GaugeLinkField& v, TransportHeading heading)
+{ return CovShift(mu, link(mu), v, heading); }
 
 //-- cartesian shifts --//
 
 /** @brief application of shift operation to operand field */
-IMPL(Transporter)::Cshift(const GaugeLinkField& u, TransportHeading heading) {
+IMPL(Transporter)::Cshift(int mu, const GaugeLinkField& u, TransportHeading heading) {
   bool forward = heading == FORWARD;
   int direction = forward ? 1 : 0;
   GridBase* pgrid = u.Grid();
@@ -701,7 +661,7 @@ IMPL(Transporter)::Cshift(const GaugeLinkField& u, TransportHeading heading) {
 
   tracePush("Transporter::Cshift");
   ACCELERATOR_SCOPE(
-    GeneralLocalStencilView s_v = stencil().View(AcceleratorRead);
+    GeneralLocalStencilView s_v = stencil(mu).View(AcceleratorRead);
     autoView(u_v, u, AcceleratorRead);
     autoView(f_v, f, AcceleratorWrite);
 
@@ -716,24 +676,12 @@ IMPL(Transporter)::Cshift(const GaugeLinkField& u, TransportHeading heading) {
 }
 
 /** @brief slightly more satisfying name for Cartesian shift */
-IMPL(Transporter)::CovShiftIdent(const GaugeLinkField& v, TransportHeading heading) 
-{ return Cshift(v, heading); }
-
-/** @brief slightly more satisfying name for Cartesian shift */
-IMPL(Transporter)::CovShiftIdentFwd(const GaugeLinkField& v) 
-{ return Cshift(v, FORWARD); }
-
-/** @brief slightly more satisfying name for Cartesian shift */
-IMPL(Transporter)::CovShiftIdentBck(const GaugeLinkField& v) 
-{ return Cshift(v, BACKWARD); }
-
-//
-// periodic transporters implementation
-//
+IMPL(Transporter)::CovShiftIdent(int mu, const GaugeLinkField& v, TransportHeading heading)
+{ return Cshift(mu, v, heading); }
 
 //-- symmetric staple --//
 
-IMPL(Transporters)::_staple(
+IMPL(Transporter)::_staple(
   const GaugeLinkField& tu, // top mu link
   const GaugeLinkField& bu, // bottom mu link
   const GaugeLinkField& lv, // left nu link
@@ -756,7 +704,7 @@ IMPL(Transporters)::_staple(
    */ 
   GaugeLinkField rs(_pgrid);
 
-  tracePush("Transporters::_staple");
+  tracePush("Transporter::_staple");
   ACCELERATOR_SCOPE(
     GeneralLocalStencilView smu_v = stencil(mu).View(AcceleratorRead);
     GeneralLocalStencilView snu_v = stencil(nu).View(AcceleratorRead);
@@ -792,12 +740,12 @@ IMPL(Transporters)::_staple(
       ACCWRITE(rs_v[n], staple);
     });
   )
-  tracePop("Transporters::_staple");
+  tracePop("Transporter::_staple");
 
   return rs;
 }
 
-IMPL(Transporters)::staple(
+IMPL(Transporter)::staple(
   const GaugeLinkField& tu, // top mu link
   const GaugeLinkField& bu, // bottom mu link
   const GaugeLinkField& lv, // left nu link
@@ -806,7 +754,7 @@ IMPL(Transporters)::staple(
   int nu
 ) { return _staple(tu, bu, lv, rv, mu, nu); }
 
-IMPL(Transporters)::staple(
+IMPL(Transporter)::staple(
   const GaugeLinkField& u, // mu link
   const GaugeLinkField& lv, // left nu link
   const GaugeLinkField& rv, // right nu link
@@ -814,25 +762,25 @@ IMPL(Transporters)::staple(
   int nu
 ) { return _staple(u, u, lv, rv, mu, nu); }
 
-IMPL(Transporters)::staple(
+IMPL(Transporter)::staple(
   const GaugeLinkField& u, // mu link
   const GaugeLinkField& v, // nu link
   int mu, 
   int nu
 ) { return _staple(u, u, v, v, mu, nu); }
 
-IMPL(Transporters)::staple(
+IMPL(Transporter)::staple(
   const GaugeLinkField& u, 
   int mu, 
   int nu
 ) { return _staple(u, u, link(nu), link(nu), mu, nu); }
 
-IMPL(Transporters)::staple(int mu, int nu) 
+IMPL(Transporter)::staple(int mu, int nu) 
 { return _staple(link(mu), link(mu), link(nu), link(nu), mu, nu); }
 
 // -- upper staple --//
 
-IMPL(Transporters)::_upperStaple(
+IMPL(Transporter)::_upperStaple(
   const GaugeLinkField& u, // mu link
   const GaugeLinkField& lv, // left nu link
   const GaugeLinkField& rv, // right nu link
@@ -850,7 +798,7 @@ IMPL(Transporters)::_upperStaple(
    */ 
   GaugeLinkField rs(_pgrid);
 
-  tracePush("Transporters::_upperStaple");
+  tracePush("Transporter::_upperStaple");
   ACCELERATOR_SCOPE(
     GeneralLocalStencilView smu_v = stencil(mu).View(AcceleratorRead);
     GeneralLocalStencilView snu_v = stencil(nu).View(AcceleratorRead);
@@ -872,12 +820,12 @@ IMPL(Transporters)::_upperStaple(
       ACCWRITE(rs_v[n], v_x*u_xpnu*adj(v_xpmu));
     });
   )
-  tracePop("Transporters::_upperStaple");
+  tracePop("Transporter::_upperStaple");
 
   return rs;
 }
 
-IMPL(Transporters)::upperStaple(
+IMPL(Transporter)::upperStaple(
   const GaugeLinkField& u, // mu link
   const GaugeLinkField& lv, // left nu link
   const GaugeLinkField& rv, // right nu link
@@ -885,26 +833,26 @@ IMPL(Transporters)::upperStaple(
   int nu
 ) { return _upperStaple(u, lv, rv, mu, nu); }
 
-IMPL(Transporters)::upperStaple(
+IMPL(Transporter)::upperStaple(
   const GaugeLinkField& lv, // mu link
   const GaugeLinkField& rv, // nu link
   int mu, 
   int nu
 ) { return _upperStaple(link(mu), lv, rv, mu, nu); }
 
-IMPL(Transporters)::upperStaple(
+IMPL(Transporter)::upperStaple(
   const GaugeLinkField& u, 
   int mu, 
   int nu
 ) { return _upperStaple(u, link(nu), link(nu), mu, nu); }
 
-IMPL(Transporters)::upperStaple(int mu, int nu) 
+IMPL(Transporter)::upperStaple(int mu, int nu) 
 { return _upperStaple(link(mu), link(nu), link(nu), mu, nu); }
 
 // -- lower staple --//
 
 /** @brief calculate lower staple */
-IMPL(Transporters)::_lowerStaple(
+IMPL(Transporter)::_lowerStaple(
   const GaugeLinkField& u, // mu link
   const GaugeLinkField& lv, // left nu link
   const GaugeLinkField& rv, // right nu link
@@ -922,7 +870,7 @@ IMPL(Transporters)::_lowerStaple(
    */ 
   GaugeLinkField rs(_pgrid);
 
-  tracePush("Transporters::_lowerStaple");
+  tracePush("Transporter::_lowerStaple");
   ACCELERATOR_SCOPE(
     GeneralLocalStencilView smu_v = stencil(mu).View(AcceleratorRead);
     GeneralLocalStencilView snu_v = stencil(nu).View(AcceleratorRead);
@@ -943,12 +891,12 @@ IMPL(Transporters)::_lowerStaple(
       ACCWRITE(rs_v[n], adj(v_xmnu)*u_xmnu*v_xmnu_pmu);
     });
   )
-  tracePop("Transporters::_lowerStaple");
+  tracePop("Transporter::_lowerStaple");
 
   return rs;
 }
 
-IMPL(Transporters)::lowerStaple(
+IMPL(Transporter)::lowerStaple(
   const GaugeLinkField& u, // mu link
   const GaugeLinkField& lv, // left nu link
   const GaugeLinkField& rv, // right nu link
@@ -956,20 +904,20 @@ IMPL(Transporters)::lowerStaple(
   int nu
 ) { return _lowerStaple(u, lv, rv, mu, nu); }
 
-IMPL(Transporters)::lowerStaple(
+IMPL(Transporter)::lowerStaple(
   const GaugeLinkField& lv, // left nu link
   const GaugeLinkField& rv, // right nu link
   int mu, 
   int nu
 ) { return _lowerStaple(link(mu), lv, rv, mu, nu); }
 
-IMPL(Transporters)::lowerStaple(
+IMPL(Transporter)::lowerStaple(
   const GaugeLinkField& u, 
   int mu, 
   int nu
 ) { return _lowerStaple(u, link(nu), link(nu), mu, nu); }
 
-IMPL(Transporters)::lowerStaple(int mu, int nu) 
+IMPL(Transporter)::lowerStaple(int mu, int nu) 
 { return _lowerStaple(link(mu), link(nu), link(nu), mu, nu); }
 
 //-- right staple --//
@@ -982,7 +930,7 @@ IMPL(Transporters)::lowerStaple(int mu, int nu)
  * -🠢 μ    
  */ 
 
-IMPL(Transporters)::rightStaple(
+IMPL(Transporter)::rightStaple(
   const GaugeLinkField& bv, // bottom mu link
   const GaugeLinkField& tv, // top mu link
   const GaugeLinkField& u, // nu link
@@ -990,20 +938,20 @@ IMPL(Transporters)::rightStaple(
   int nu
 ) { return _upperStaple(u, bv, tv, nu, mu); }
 
-IMPL(Transporters)::rightStaple(
+IMPL(Transporter)::rightStaple(
   const GaugeLinkField& bv, // bottom mu link
   const GaugeLinkField& tv, // top mu link
   int mu, 
   int nu
 ) { return _upperStaple(link(nu), bv, tv, nu, mu); }
 
-IMPL(Transporters)::rightStaple(
+IMPL(Transporter)::rightStaple(
   const GaugeLinkField& u, 
   int mu, 
   int nu
 ) { return _upperStaple(u, link(mu), link(mu), nu, mu); }
 
-IMPL(Transporters)::rightStaple(int mu, int nu) 
+IMPL(Transporter)::rightStaple(int mu, int nu) 
 { return _upperStaple(link(nu), link(mu), link(mu), nu, mu); }
 
 //-- left staple --//
@@ -1016,7 +964,7 @@ IMPL(Transporters)::rightStaple(int mu, int nu)
  * -🠢 μ    
  */
 
-IMPL(Transporters)::leftStaple(
+IMPL(Transporter)::leftStaple(
   const GaugeLinkField& bv, // bottom mu link
   const GaugeLinkField& tv, // top mu link
   const GaugeLinkField& u, // nu link
@@ -1024,25 +972,25 @@ IMPL(Transporters)::leftStaple(
   int nu
 ) { return _lowerStaple(u, bv, tv, nu, mu); }
 
-IMPL(Transporters)::leftStaple(
+IMPL(Transporter)::leftStaple(
   const GaugeLinkField& bv, // bottom mu link
   const GaugeLinkField& tv, // top mu link
   int mu, 
   int nu
 ) { return _lowerStaple(link(nu), bv, tv, nu, mu); }
 
-IMPL(Transporters)::leftStaple(
+IMPL(Transporter)::leftStaple(
   const GaugeLinkField& u, 
   int mu, 
   int nu
 ) { return _lowerStaple(u, link(mu), link(mu), nu, mu); }
 
-IMPL(Transporters)::leftStaple(int mu, int nu) 
+IMPL(Transporter)::leftStaple(int mu, int nu) 
 { return _lowerStaple(link(nu), link(mu), link(mu), nu, mu); }
 
 //-- symmetric staple derivative --//
 
-IMPL(Transporters)::_stapleDerivative(
+IMPL(Transporter)::_stapleDerivative(
   const GaugeLinkField& u, // mu link
   const GaugeLinkField& v, // nu link
   const GaugeLinkField& c, // chain
@@ -1067,7 +1015,7 @@ IMPL(Transporters)::_stapleDerivative(
    */
   GaugeLinkField rds(_pgrid);
 
-  tracePush("Transporters::_stapleDerivative");
+  tracePush("Transporter::_stapleDerivative");
   ACCELERATOR_SCOPE(
     GeneralLocalStencilView smu_v = stencil(mu).View(AcceleratorRead);
     GeneralLocalStencilView snu_v = stencil(nu).View(AcceleratorRead);
@@ -1111,14 +1059,14 @@ IMPL(Transporters)::_stapleDerivative(
       ACCWRITE(rds_v[n], staple);
     });
   )
-  tracePop("Transporters::_stapleDerivative");
+  tracePop("Transporter::_stapleDerivative");
   
   return rds;
 }
 
 //-- symmetric staple derivative --//
 
-IMPL(Transporters)::stapleDerivative(
+IMPL(Transporter)::stapleDerivative(
   const GaugeLinkField& u, // mu link
   const GaugeLinkField& v, // nu link
   const GaugeLinkField& c, // chain
@@ -1127,7 +1075,7 @@ IMPL(Transporters)::stapleDerivative(
 ) { return _stapleDerivative(u, v, c, mu, nu); }
 
 /** @brief symmetric staple derivative w/o passing of middle link */
-IMPL(Transporters)::stapleDerivative(
+IMPL(Transporter)::stapleDerivative(
   const GaugeLinkField& v,
   const GaugeLinkField& c,
   int mu,
@@ -1135,7 +1083,7 @@ IMPL(Transporters)::stapleDerivative(
 ) { return stapleDerivative(link(mu), v, c, mu, nu); }
 
 /** @brief symmetric staple derivative w/o explicit middle/side links */
-IMPL(Transporters)::stapleDerivative(
+IMPL(Transporter)::stapleDerivative(
   const GaugeLinkField& c, 
   int mu, 
   int nu
@@ -1154,4 +1102,4 @@ IMPL(Transporters)::stapleDerivative(
 
 NAMESPACE_END(Grid);
 
-#endif // QCD_UTILS_PERIODIC_TRANSPORTERS_H
+#endif // QCD_UTILS_PERIODIC_TRANSPORTER_H

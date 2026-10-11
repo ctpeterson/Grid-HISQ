@@ -60,7 +60,7 @@ directory
 #ifndef QCD_UTILS_HISQ_IMPL_H
 #define QCD_UTILS_HISQ_IMPL_H 
 
-#include <Grid/qcd/utils/Transporters.h>
+#include <Grid/qcd/utils/Transporter.h>
 #include <Grid/qcd/utils/UnitaryProjection.h>
 #include <Grid/qcd/action/ActionParams.h>
 
@@ -255,7 +255,7 @@ class HighlyImprovedStaggeredFermionImpl: Gimpl {
  * methods for FNAL/MILC and non-FNAL/MILC implementations of Highly Improved Staggered
  * Fermions. This class boasts an implementation of HISQ that is low in communication 
  * overhead whilst retaining a low memory footprint by Grid's PaddedCell and 
- * GeneralLocalStencil through the PeriodicBC::Transporters class.
+ * GeneralLocalStencil through the PeriodicBC::Transporter class.
  */
   
 public: INHERIT_GIMPL_TYPES(Gimpl);
@@ -264,6 +264,7 @@ private:
   typedef typename Simd::scalar_type GridScalar;
   typedef typename std::vector<GaugeLinkField> GaugeLorentzField;
   typedef typename std::vector<ComplexField> StaggeredPhases;
+  using Transporter = PeriodicBC::Transporter<Gimpl>;
 
 public:
   GridCartesian* ugrid;
@@ -273,6 +274,9 @@ public:
 
 private:
   int _depth = -1;
+
+  int _cached = false;
+  PeriodicBC::TransporterStencil _stencil;
 
 private:
   void init(GridCartesian* grid, bool calculateStaggeredPhases) {
@@ -428,7 +432,7 @@ public:
     tracePush("HighlyImprovedStaggeredFermionImpl::smear");
 
     PaddedCell cell(DEPTH, ugrid);
-    PeriodicBC::Transporters<Gimpl> w(cell, W);
+    Transporter w = _cached ? Transporter(cell, W, _stencil) : Transporter(cell, W);
     GridBase* pgrid = (GridBase*)cell.grids.back();
     GaugeLorentzField x(Nd, pgrid);
     GaugeLinkField s3(pgrid), s5(pgrid);
@@ -450,6 +454,9 @@ public:
     // Naik term
     HISQNAIK(x[mu] = ctx.naik*w.CovShiftFwd(mu, w.exchange(w.CovShiftFwd(mu), mu)))
     if (ctx.naik != 0.0) WWW = w.toTightGrid(toGauge(x));
+
+    // Cache stencil
+    if (!_cached) { _stencil = w.stencil(); _cached = true; }
 
     tracePop("HighlyImprovedStaggeredFermionImpl::smear");
   }
@@ -580,7 +587,7 @@ public:
     tracePush("HighlyImprovedStaggeredFermionImpl::smearDerivative");
 
     PaddedCell cell(DEPTH, ugrid);
-    PeriodicBC::Transporters<Gimpl> w(cell, W);
+    Transporter w = _cached ? Transporter(cell, W, _stencil) : Transporter(cell, W);
     GridBase* pgrid = (GridBase*)cell.grids.back();
     GaugeLorentzField dxdw = toLorentz(w.toPaddedGrid(dSdX));
     GaugeLorentzField dxdu(Nd, pgrid);
@@ -633,6 +640,9 @@ public:
 
     // extract from padded grid
     dXdU = w.toTightGrid(toGauge(dxdu));
+
+    // Cache stencil
+    if (!_cached) { _stencil = w.stencil(); _cached = true; }
 
     tracePop("HighlyImprovedStaggeredFermionImpl::smearDerivative");
   }

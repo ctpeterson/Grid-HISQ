@@ -63,7 +63,7 @@ See the full license in the file "LICENSE" in the top level distribution directo
 #ifndef QCD_PERIODIC_PLAQ_PLUS_RECTANGLE_PLUS_PARALLELOGRAM_GAUGE_ACTION_H
 #define QCD_PERIODIC_PLAQ_PLUS_RECTANGLE_PLUS_PARALLELOGRAM_GAUGE_ACTION_H
 
-#include <Grid/qcd/utils/Transporters.h>
+#include <Grid/qcd/utils/Transporter.h>
 #include <Grid/perfmon/Tracing.h>
 
 NAMESPACE_BEGIN(Grid);
@@ -210,7 +210,7 @@ public:
     RealD cr = invNc*ctx.cr/actionNorm;
     RealD cpg = invNc*ctx.cpg/actionNorm;
 
-    PeriodicBC::Transporters<Gimpl> u(cell, U);
+    PeriodicBC::Transporter<Gimpl> u(cell, U);
     
     LatticeComplex action(grid);
 
@@ -287,7 +287,7 @@ public:
     RealD cr = 0.5*invNc*ctx.cr;
     RealD cpg = 0.5*invNc*ctx.cpg;
 
-    PeriodicBC::Transporters<Gimpl> u(cell, U); 
+    PeriodicBC::Transporter<Gimpl> u(cell, U);
     
     GaugeLorentzField dsdu = toLorentz(u.toPaddedGrid(dSdU));
     GaugeLinkField ta(grid), tb(grid);
