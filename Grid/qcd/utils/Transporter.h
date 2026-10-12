@@ -50,7 +50,7 @@ namespace PeriodicBC {
 #define ACCELERATOR_SCOPE(exec) { exec; } \
 
 // shorten call to get stencil entry in declaration
-#define STENCIL_ENTRY(se, st, mu, n)              \
+#define STENCIL_ENTRY(se, st, mu, n)                  \
   GeneralStencilEntry const *se = st.GetEntry(mu, n); \
 
 // shorten call to coalesced read in function
@@ -264,6 +264,11 @@ public:
   void refresh(Lattice<vobj>& u, int dim) 
   { _pcell->Face_exchange(u, u, dim, depth, true); }
 
+  /** @brief in-place directional halo refresh -- two dimensions */
+  template<class vobj>
+  void refresh(Lattice<vobj>& u, int dim1, int dim2)
+  { refresh(u, dim1); refresh(u, dim2); }
+
   /** @brief directional halo exchange -- single dimension */
   inline GaugeLinkField exchange(GaugeLinkField u, int dim) {
     tracePush("Transporter::exchange(dim)");
@@ -415,7 +420,35 @@ public:
     int nu
   );
 
+  inline void _staple(
+    GaugeLinkField& rs,
+    const GaugeLinkField& tu,
+    const GaugeLinkField& bu,
+    const GaugeLinkField& lv,
+    const GaugeLinkField& rv,
+    int mu,
+    int nu,
+    RealD coeff = 1.0,
+    bool add = false
+  );
+
 public:
+  /** @brief accumulate symmetric staple into a separate output field */
+  inline void addStaple(
+    GaugeLinkField& rs,
+    const GaugeLinkField& u,
+    int mu,
+    int nu,
+    RealD coeff = 1.0
+  ) { _staple(rs, u, u, link(nu), link(nu), mu, nu, coeff, true); }
+
+  inline void addStaple(
+    GaugeLinkField& rs,
+    int mu,
+    int nu,
+    RealD coeff = 1.0
+  ) { addStaple(rs, link(mu), mu, nu, coeff); }
+
   inline const GaugeLinkField staple(
     const GaugeLinkField& tu,
     const GaugeLinkField& bu, 
@@ -583,7 +616,52 @@ public:
     int nu
   );
 
+  template<bool both = false>
+  inline void _stapleDerivative(
+    GaugeLinkField& rds,
+    const GaugeLinkField& u,
+    const GaugeLinkField& v,
+    const GaugeLinkField& c,
+    int mu,
+    int nu,
+    RealD coeff = 1.0,
+    bool add = false,
+    GaugeLinkField* rdm = nullptr
+  );
+
 public:
+  /**
+   * @brief accumulate middle and side derivatives into separate output fields
+   * @details For Sν(u), dmu receives Sν(c) and dnu receives the side derivative.
+   * The outputs must be separate from each other and from the input fields.
+   */
+  inline void addStapleDerivative(
+    GaugeLinkField& dmu,
+    GaugeLinkField& dnu,
+    const GaugeLinkField& u,
+    const GaugeLinkField& c,
+    int mu,
+    int nu
+  ) { _stapleDerivative<true>(dnu, link(nu), u, c, nu, mu, 1.0, true, &dmu); }
+
+  /** @brief accumulate staple derivative into a separate output field */
+  inline void addStapleDerivative(
+    GaugeLinkField& rds,
+    const GaugeLinkField& v,
+    const GaugeLinkField& c,
+    int mu,
+    int nu,
+    RealD coeff = 1.0
+  ) { _stapleDerivative(rds, link(mu), v, c, mu, nu, coeff, true); }
+
+  inline void addStapleDerivative(
+    GaugeLinkField& rds,
+    const GaugeLinkField& c,
+    int mu,
+    int nu,
+    RealD coeff = 1.0
+  ) { addStapleDerivative(rds, link(nu), c, mu, nu, coeff); }
+
   inline const GaugeLinkField stapleDerivative(
     const GaugeLinkField& v,
     const GaugeLinkField& u,
@@ -682,12 +760,29 @@ IMPL(Transporter)::CovShiftIdent(int mu, const GaugeLinkField& v, TransportHeadi
 //-- symmetric staple --//
 
 IMPL(Transporter)::_staple(
+  const GaugeLinkField& tu,
+  const GaugeLinkField& bu,
+  const GaugeLinkField& lv,
+  const GaugeLinkField& rv,
+  int mu,
+  int nu
+) {
+  GaugeLinkField rs(_pgrid);
+  _staple(rs, tu, bu, lv, rv, mu, nu);
+  return rs;
+}
+
+template <class Gimpl>
+inline void Transporter<Gimpl>::_staple(
+  GaugeLinkField& rs,
   const GaugeLinkField& tu, // top mu link
   const GaugeLinkField& bu, // bottom mu link
   const GaugeLinkField& lv, // left nu link
   const GaugeLinkField& rv, // right nu link
   int mu, 
-  int nu
+  int nu,
+  RealD coeff,
+  bool add
 ) {
   /**
    * @brief Calculates "symmetric" staple (i.e., staple + its reflection)
@@ -702,8 +797,6 @@ IMPL(Transporter)::_staple(
    * What is meant by "symmetric" is that the staple and its reflection about
    * the plane bisecting the mu-link are added together.
    */ 
-  GaugeLinkField rs(_pgrid);
-
   tracePush("Transporter::_staple");
   ACCELERATOR_SCOPE(
     GeneralLocalStencilView smu_v = stencil(mu).View(AcceleratorRead);
@@ -737,12 +830,11 @@ IMPL(Transporter)::_staple(
       staple = staple + adj(v_xmnu)*u_xmnu*v_xmnu_pmu;
 
       // full result
-      ACCWRITE(rs_v[n], staple);
+      if (add) ACCWRITE(rs_v[n], coalescedRead(rs_v[n]) + coeff*staple);
+      else     ACCWRITE(rs_v[n], staple);
     });
   )
   tracePop("Transporter::_staple");
-
-  return rs;
 }
 
 IMPL(Transporter)::staple(
@@ -991,30 +1083,49 @@ IMPL(Transporter)::leftStaple(int mu, int nu)
 //-- symmetric staple derivative --//
 
 IMPL(Transporter)::_stapleDerivative(
+  const GaugeLinkField& u,
+  const GaugeLinkField& v,
+  const GaugeLinkField& c,
+  int mu,
+  int nu
+) {
+  GaugeLinkField rds(_pgrid);
+  _stapleDerivative(rds, u, v, c, mu, nu);
+  return rds;
+}
+
+template <class Gimpl>
+template <bool both>
+inline void Transporter<Gimpl>::_stapleDerivative(
+  GaugeLinkField& rds,
   const GaugeLinkField& u, // mu link
   const GaugeLinkField& v, // nu link
   const GaugeLinkField& c, // chain
   int mu,
-  int nu
+  int nu,
+  RealD coeff,
+  bool add,
+  GaugeLinkField* rdm
 ) {
   /**
-   * @brief Calculates nu-oriented derivative of symmetric staple
+   * @brief Calculates side-link derivative of symmetric staple
    * @author Curtis Taylor Peterson
    * @details
-   * Calculates nu-oriented derivative of closed/symmetric staple. See diagram in
-   * symmetric staple method for orientation of symmetric staple. Derivative "D"
-   * of just nu links (what this method calculates) is
+   * For Sμ(v), u contains the two mu-oriented side links and v the nu-oriented
+   * middle link. The side derivative receives four contributions:
    *            ----🠢      ----🠢 
    *            ⮾    🠣     🠡   ⮾ 
    * ν     D =  x----x  +  x----x
    * 🠡          ⮾    🠡     🠣   ⮾
    * -🠢 μ       ----🠢      ----🠢 
    *             [1a]       [1b] 
-   * where replacement of "🠣" or "🠡" with ⮾ indicates replacement of link with 
+   * where replacement of "🠣" or "🠡" with ⮾ indicates replacement of link with
    * contribution from chain rule (i.e., action of derivative).
+   * When both derivatives are requested, rdm also receives Sμ(c). We can reuse
+   * c(n+μ) u(n+ν)† in the upper staple and the right-side derivative, saving one
+   * matrix product and a separate pass through the fields. The side derivative
+   * is calculated by the same code in either case.
    */
-  GaugeLinkField rds(_pgrid);
-
   tracePush("Transporter::_stapleDerivative");
   ACCELERATOR_SCOPE(
     GeneralLocalStencilView smu_v = stencil(mu).View(AcceleratorRead);
@@ -1025,6 +1136,8 @@ IMPL(Transporter)::_stapleDerivative(
     autoView(v_v, v, AcceleratorRead);
     autoView(c_v, c, AcceleratorRead);
     autoView(rds_v, rds, AcceleratorWrite);
+    auto rdm_v = rds_v;
+    if constexpr (both) rdm_v = rdm->View(AcceleratorWrite);
 
     accelerator_for(n, _pgrid->oSites(), _pgrid->Nsimd(), {
       STENCIL_ENTRY(se_pmu, smu_v, 1, n);
@@ -1048,7 +1161,8 @@ IMPL(Transporter)::_stapleDerivative(
       // right: upper staple
       auto v_x = ACCREAD(v_v, se_0);
       auto c_xpmu = ACCREAD(c_v, se_pmu);
-      staple = staple + v_x*u_xpnu*adj(c_xpmu);
+      auto cu = c_xpmu*adj(u_xpnu);
+      staple = staple + v_x*adj(cu);
 
       // right: lower staple
       auto v_xmnu = ACCREAD(v_v, se_mnu);
@@ -1056,12 +1170,24 @@ IMPL(Transporter)::_stapleDerivative(
       staple = staple + adj(v_xmnu)*u_xmnu*c_xmnu_pmu;
 
       // full result
-      ACCWRITE(rds_v[n], staple);
+      if (add) ACCWRITE(rds_v[n], coalescedRead(rds_v[n]) + coeff*staple);
+      else     ACCWRITE(rds_v[n], staple);
+
+      // middle link: upper and lower staples
+      if constexpr (both) {
+        STENCIL_ENTRY(se_mmu, smu_v, 0, n);
+        STENCIL_ENTRY(se_mmu_pnu, smunu_v, 2, n);
+        auto u_x = ACCREAD(u_v, se_0);
+        auto u_xmmu = ACCREAD(u_v, se_mmu);
+        auto c_xmmu = ACCREAD(c_v, se_mmu);
+        auto u_xmmu_pnu = ACCREAD(u_v, se_mmu_pnu);
+        auto middle = u_x*cu + adj(u_xmmu)*c_xmmu*u_xmmu_pnu;
+        ACCWRITE(rdm_v[n], coalescedRead(rdm_v[n]) + middle);
+      }
     });
+    if constexpr (both) rdm_v.ViewClose();
   )
   tracePop("Transporter::_stapleDerivative");
-  
-  return rds;
 }
 
 //-- symmetric staple derivative --//

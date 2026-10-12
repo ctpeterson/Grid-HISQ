@@ -32,6 +32,10 @@ directory
  * This header file is meant to act as an interface for both Grid and the 
  * MILC codebase to utilize the "highly improved staggered quark" action
  * within Grid. The interface itself is composed of a single core component class
+ *
+ * Massive credit to Shaun Lahert for finding the most critical optimization that
+ * directly affected the run time, that being the slight refactoring to 
+ * GeneralLocalStencil that bulk transfers the lookup table to the GPU. 
  * 
  * * HighlyImprovedStaggeredFermionImpl: Class providing support for highly
  *   improved staggered fermions in Grid. EXtoses methods for fat7/asqtad 
@@ -300,6 +304,10 @@ public:
   ): stagPhases(Nd, grid), params(StaggeredImplParams({1, 1, 1, -1}))
   { init(grid, calculateStaggeredPhases); }
 
+  // prevent duplicate ownership of PaddedCell grids
+  HighlyImprovedStaggeredFermionImpl(const HighlyImprovedStaggeredFermionImpl&) = delete;
+  HighlyImprovedStaggeredFermionImpl& operator=(const HighlyImprovedStaggeredFermionImpl&) = delete;
+
 private:
   void calcStagPhases(StaggeredPhases& phases) {
     /**
@@ -512,75 +520,68 @@ public:
     const HISFContext ctx
   ) {
     /**
-     * @brief "Effective 3-link" fat7/asqtad + Lepage (optional) smear
+     * @brief "Effective 3-link" fat7/asqtad + Lepage (optional) derivative
      * @author Curtis Taylor Peterson
      * @details
-     * Calculates Wirtinger derivative of fat7/asqtad + Lepage links, including chain
-     * rule. See the comments under `smear` method for details on fat7/asqtad + 
-     * Lepage smearing. This method was originally implemented by translating the
-     * "effective 3-link" force in QOP/QDP and Quantum EXtressions (QEX) written by 
-     * James Osborn (Argonne National Laboratory) into Grid. It was then reworked to 
-     * make full use of thevpadded cells in Grid, which resulted in an algorithm that 
-     * is similar in spirit to that in QOP/QDP and QEX, but which deviates in how it 
-     * reasons through each contribution to the derivative. The result is an 
-     * algorithm that boasts a significant reduction in memory usage compared to 
-     * QOP/QDP and QEX. This code has been tested against its translated counterpart,
-     * which itself was thoroughly tested against QEX.
-     * 
-     * The full force from some smeared action S(Uμ) is
-     * (1) δS/δUμ(n) = LieAlgebraProjection[ Uμ(n) ∂S/∂Uμ(n) ]
-     * This method calculates ∂S/∂Uμ(n) (i.e., not δS/δUμ(n)); it is to be 
-     * interpreted as a matrix Wirtinger derivative, with the rules
-     * (2) [∂S/∂Uμ(n)]ij = ∂S/∂Uμ(n)ji,                      [2a]
-     *     ∂Uμ(n)ij/∂Uν(m)kl = δ(i,k) δ(j,l) δ(μ,ν) δ(m,n),  [2b]
-     *     ∂Uμ(n)/∂Uν†(m) = 0.                               [2c]
-     * Taking Vμ(n) to be some fat7/asqtad-smeared link [Eqn. 5 in `smear` method], 
-     * the chain rule gives
-     * (2) ∂S/∂Uμ(n) = ∑_{δ,m} ∂S/∂Vδ(m) ∂Vδ(m)/∂Uμ(n)
-     *               + ∑_{δ,m} ∂S/∂Vδ†(m) ∂Vδ†(m)/∂Uμ(n).
-     * For simplicity, consider the top contribution to a single symmetric Sν(n): 
+     * Calculates the derivative of fat7/asqtad + Lepage links, including chain
+     * rule. See the comments under `smear` method for details on the smearing.
+     * This method follows the "effective 3-link" force in QOPQDP and Quantum
+     * EXpressions (QEX), written by James Osborn (Argonne National Laboratory),
+     * and combines it with Grid's padded cell.
+     *
+     * Taking Vμ(n) to be a smeared link, write the input chain rule as Cμ(n), with
+     * (1) dS = Re ∑_{μ,n} tr[ Cμ(n)† dVμ(n) ].
+     * The output Fμ(n) uses the same convention with V replaced by U. Multiplying
+     * by the link and projecting onto the Lie algebra is left to the caller.
+     *
+     * Consider a single symmetric staple Sν(u), as defined in `smear`. Its upper
+     * contribution is
      * ν      ---🠢
      * 🠡      🠡   🠣   (Fig 1)
      * -🠢 μ   ....
-     * The forward derivative of Sν(n) with respect to Uμ(n) will receive 
-     * contributions from the leftmost link and the top link. To understand what
-     * we're doing here, we need to consider these contributions "from the perspective
-     * of the force". In other words, before we take the derivative, we think of the 
-     * the contribution from the chain rule ∂S/∂Vδ as completing a plaquette 
-     * (just with the like ∂S/∂Vδ pointing in the "wrong" direction); in Fig. 1, this 
-     * is the dotted line below the staple. We then think of the contribution from 
-     * the derivative on the left and top link by "rotating" the perspective in 
-     * Fig. 1, such that the link that the derivative ∂/∂Uμ(n) hits lies on the 
-     * x-axis where the contribution from ∂S/∂Vδ was. We then get
-     * (3)            Uμ(n)
-     *        🠠----   ----🠢 
-     * ν      ⮾   🠡 + 🠡   🠣 (Fig 2)
-     * 🠡      ----🠢   --⮾--
-     * -🠢 μ   Uμ(n)
-     *         [3a]    [3b]
-     * where an "⮾" indicates a replacement with the chain rule; only when the 
-     * center link is hit is the chain rule and the derivative aligned along 
-     * the same direction. Additionally, notice that the orientation of the staples
-     * that comprise the staple derivative are opposite to those in the origanl 
-     * link; this is due to rotating the perspective to that of the force. To make 
-     * diagrammatics work out without writing redundant procedures for the opposite
-     * orientation, we work with the adjoint of the chain rule, calculate the 
-     * derivative as if we were completing properly-oriented plaquettes, then correct
-     * by returning the adjoint of the full derivative. The full contribution from the 
-     * 3-link staples follows by repeating this procedure for the adjoint, reflection, 
-     * and adjoint of the reflection. The 5- and 7-link staples can be constructed 
-     * from the 3-link staples in a similar manner. For example, a 5-link staple will
-     * get the contributions
-     * (4)  🠠---- 🠠----    
-     * ν    ⮾          🠡
-     * 🠡    ----🠢 ----🠢
-     * -🠢 μ
-     * As the derivative is quite complicated, some of this may seem a bit vague.
-     * Please feel free to contact Curtis Peterson (see email above) for any 
-     * questions that may arise.
-     * 
+     * where the dotted line closes the staple with the chain rule. Differentiating
+     * the middle link passes the chain back to u; differentiating the side links
+     * adds to the force on Uν. Including the lower staple gives
+     * (2) dS = Re ∑_n tr[ Sν(C)† du + Dν(u,C)† dUν ].
+     * Here Dν is the four-term side derivative. In Transporter, the two outputs
+     * are `staple(C, mu, nu)` and `stapleDerivative(u, C, nu, mu)`. Notice that the
+     * directions in the second call are reversed. We calculate both together
+     * so that their common links and matrix products can be reused.
+     *
+     * We now fix the direction μ of the smeared link, and follow its chain rule
+     * backwards through the smearing. The key thing to note is that several
+     * paths use the same 3-link staple. We can add their chain rules together
+     * before differentiating that staple, just as we reuse it in the smearing.
+     * Suppressing the site index n, first store
+     * (3) s3[ν] = Sν(Uμ),
+     * and set d5[ν] to zero. For each ν≠μ, construct
+     * (4) s5 = c3 ∑_{i,j≠μ,ν; i≠j} Sj(s3[i]) + lepage*s3[ν].
+     * This is the middle link for the outermost staple of the 7-link and Lepage
+     * terms. Applying (2) adds Dν(s5,Cμ) to Fν and gives d3 = Sν(Cμ).
+     * The Lepage chain contributes lepage*d3 to d5[ν]. The remaining 5- and
+     * 7-link chains can then be combined:
+     * (5) d3 = c3*d3 + c2*Cμ.
+     * For each remaining pair i,j, applying (2) to Si(s3[j]) gives
+     * (6) Fi += Di(s3[j],d3),    d5[j] += Si(d3).
+     * Thus d5[ν] collects all contributions to the chain on s3[ν]. Once the
+     * sum over the outermost staples is complete, add the direct 3-link chain:
+     * (7) c = c1*Cμ + d5[ν].
+     * One last application of (2) gives
+     * (8) Fν += Dν(Uμ,c),        Fμ += Sν(c).
+     * And that's it. The 1-link contribution initializes F before these loops,
+     * with coefficient c0 - 6*lepage to compensate for the extra 1-link paths
+     * in Sν(Sν(Uμ)). The Lepage term shares the same intermediates throughout.
+     *
+     * The Naik derivative is calculated separately. Writing U, U+, U-, ... for
+     * links displaced along μ, and C for the chain on the long link, its three
+     * contributions are
+     * (9) naik * [ C U++† U+† + U-† C- U+† + U-† U--† C-- ].
+     * Shifting U†C once gives `back`; it is shared by the second and third
+     * contributions. The first uses the shifted product U+†U†. This needs only
+     * nearest-neighbor exchanges.
+     *
      * References:
-     * * Quantum EXtressions (QEX): https://github.com/jcosborn/qex
+     * * Quantum EXpressions (QEX): https://github.com/jcosborn/qex
      * * QOPQDP [SciDAC]: https://github.com/usqcd-software/qopqdp
      * * Follana, E. et al.: https://doi.org/10.1103/PhysRevD.75.054502
      */
@@ -590,53 +591,59 @@ public:
     Transporter w = _cached ? Transporter(cell, W, _stencil) : Transporter(cell, W);
     GridBase* pgrid = (GridBase*)cell.grids.back();
     GaugeLorentzField dxdw = toLorentz(w.toPaddedGrid(dSdX));
-    GaugeLorentzField dxdu(Nd, pgrid);
-    GaugeLinkField cnu(pgrid), ci(pgrid), cj(pgrid);
-    GaugeLinkField snu(pgrid), si(pgrid), sj(pgrid);
-    GaugeLinkField dnu(pgrid), di(pgrid), dj(pgrid);
+    GaugeLorentzField dxdu(Nd, pgrid), s3(Nd, pgrid), d5(Nd, pgrid);
+    GaugeLinkField s5(pgrid), d3(pgrid), c(pgrid);
 
     // fat7 + lepage (lepage won't execute if lepage == 0.0)
-    HISQLOOP0( 
-      dxdu[mu] = (ctx.c0 - 6.0*ctx.lepage)*dxdw[mu];
+    HISQLOOP0(dxdu[mu] = (ctx.c0 - 6.0*ctx.lepage)*dxdw[mu])
+    HISQLOOP0(
       HISQLOOP1(
-        dnu = Zero();            // Eqn 3a
-        cnu = ctx.c1*dxdw[mu];   // Eqn 3b
-        snu = ctx.c1*w.link(nu); // Eqn 4 
-        HISQLEPAGE(
-          dnu += ctx.lepage*w.staple(dxdw[nu], nu, mu);
-          cnu += ctx.lepage*w.staple(dxdw[mu], mu, nu);
-          snu += ctx.lepage*w.staple(nu, mu);
-        )
+        s3[nu] = w.exchange(w.staple(mu, nu), mu, nu); // Eqn 3
+        d5[nu] = Zero();
+      )
+      HISQLOOP1(
+        s5 = Zero(); // Eqn 4
+        HISQLOOP2(HISQLOOP3(w.addStaple(s5, s3[i], mu, j, ctx.c3)))
+        HISQLEPAGE(s5 += ctx.lepage*s3[nu])
+        w.refresh(s5, mu, nu);
+        d3 = Zero();
+        w.addStapleDerivative(d3, dxdu[nu], s5, dxdw[mu], mu, nu);
+        HISQLEPAGE(d5[nu] += ctx.lepage*d3)
+        d3 = ctx.c3*d3 + ctx.c2*dxdw[mu]; // Eqn 5
         HISQLOOP2(
-          di = w.exchange(w.staple(dxdw[nu], nu, i), nu, i);
-          ci = ctx.c2*dxdw[mu];
-          si = ctx.c2*w.link(nu);
-          HISQLOOP3(
-            dj = ctx.c3*w.staple(di, nu, j);
-            cj = ctx.c3*w.staple(dxdw[mu], mu, j); 
-            sj = w.exchange(ctx.c3*w.staple(nu, j), nu, j); 
-          )
-          dnu += ctx.c2*di + dj;
-          cnu += w.staple(w.exchange(ci + cj, mu, i), mu, i); 
-          snu += w.staple(w.exchange(si + sj, nu, i), nu, i);
-          dxdu[mu] += w.stapleDerivative(sj, di, mu, nu); // Eqn 3a & 4
+          w.refresh(d3, mu, i);
+          HISQLOOP3(w.addStapleDerivative(d5[j], dxdu[i], s3[j], d3, mu, i)) // Eqn 6
         )
-        dxdu[mu] += w.stapleDerivative(w.exchange(dnu, mu, nu), mu, nu);
-        dxdu[mu] += w.staple(w.exchange(cnu, mu, nu), mu, nu);           
-        dxdu[mu] += w.stapleDerivative(w.exchange(snu, mu, nu), dxdw[nu], mu, nu);
-    ) )
+      )
+      HISQLOOP1(
+        c = ctx.c1*dxdw[mu] + d5[nu]; // Eqn 7
+        w.refresh(c, mu, nu);
+        w.addStapleDerivative(dxdu[mu], dxdu[nu], w.link(mu), c, mu, nu); // Eqn 8
+      )
+    )
 
-    // Naik ("long link")
+    // Naik ("long link") -- Eqn 9
     if (ctx.naik != 0.0) dxdw = toLorentz(w.toPaddedGrid(dSdWWW));
-    HISQNAIK( 
-      for (int term = 0; term < 3; ++term) { 
-        if (term == 0) {
-          si = w.link(mu);
-          sj = w.exchange(w.CovShiftIdentFwd(mu, si), mu);
-          snu = sj*w.CovShiftIdentFwd(mu, sj)*adj(dxdw[mu]);
-        } else { snu = w.CovShiftIdentBck(mu, w.exchange(adj(sj)*snu*si, mu)); }
-        dxdu[mu] += ctx.naik*adj(snu);
-    } )
+    HISQNAIK(
+      // reuse the temporary fields from the staples
+      auto& unext = s5;
+      auto& chain = d3;
+      auto& back = c;
+
+      unext = w.CovShiftIdentFwd(mu, w.link(mu));
+      chain = adj(w.link(mu))*dxdw[mu];
+      w.refresh(chain, mu);
+      
+      back = w.CovShiftIdentBck(mu, chain);
+      chain = adj(unext)*adj(w.link(mu));
+      w.refresh(chain, mu);
+      
+      dxdu[mu] += ctx.naik*(dxdw[mu]*w.CovShiftIdentFwd(mu, chain) + back*adj(unext));
+      chain = adj(w.link(mu))*back;
+      w.refresh(chain, mu);
+      
+      dxdu[mu] += ctx.naik*w.CovShiftIdentBck(mu, chain);
+    )
 
     // extract from padded grid
     dXdU = w.toTightGrid(toGauge(dxdu));
