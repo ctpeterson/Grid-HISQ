@@ -308,7 +308,7 @@ case ${ac_ACCELERATOR} in
       AC_DEFINE([GRID_SYCL],[1],[Use SYCL offload]);;
     hip)
       echo HIP acceleration
-      LIBS="${LIBS} -lhipblas -lrocsolver -lrocblas -lhipfft"
+      LIBS="${LIBS} -lhipblas -lrocblas -lhipfft"
       AC_DEFINE([GRID_HIP],[1],[Use HIP offload]);;
     none)
       echo NO acceleration    ;;
