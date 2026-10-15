@@ -1174,7 +1174,7 @@ inline void Transporter<Gimpl>::_stapleDerivative(
       else     ACCWRITE(rds_v[n], staple);
 
       // middle link: upper and lower staples
-      if constexpr (both) {
+      if (both) {
         STENCIL_ENTRY(se_mmu, smu_v, 0, n);
         STENCIL_ENTRY(se_mmu_pnu, smunu_v, 2, n);
         auto u_x = ACCREAD(u_v, se_0);
