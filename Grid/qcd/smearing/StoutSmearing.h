@@ -9,6 +9,7 @@
  Author: unknown
  Author: Felix Erben <ferben@ed.ac.uk>
  Author: Michael Marshall <Michael.Marshall@ed.ac.uk>
+ Author: Curtis Taylor Peterson <curtistaylorpetersonwork@gmail.com> (Nc = 2)
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -63,20 +64,20 @@ public:
 
   /*! Stout smearing with base explicitly specified */
   Smear_Stout(Smear<Gimpl>* base) : SmearBase{base} {
-    GRID_ASSERT(Nc == 3 && "Stout smearing currently implemented only for Nc==3");
+    GRID_ASSERT((Nc == 2 || Nc == 3) && "Stout smearing currently implemented only for Nc = 2 or 3");
   }
 
   /*! Construct stout smearing object from explicitly specified rho matrix */
   Smear_Stout(const std::vector<double>& rho_)
     : OwnedBase{new Smear_APE<Gimpl>(rho_)}, SmearBase{OwnedBase.get()} {
     std::cout << GridLogDebug << "Stout smearing constructor : Smear_Stout(const std::vector<double>& " << rho_ << " )" << std::endl;
-    GRID_ASSERT(Nc == 3 && "Stout smearing currently implemented only for Nc==3");
+    GRID_ASSERT((Nc == 2 || Nc == 3) && "Stout smearing currently implemented only for Nc = 2 or 3");
     }
 
   /*! Default constructor. rho is constant in all directions, optionally except for orthogonal dimension */
   Smear_Stout(double rho = 1.0, int orthogdim = -1)
   : OrthogDim{orthogdim}, SmearRho{ rho3D(rho,orthogdim) }, OwnedBase{ new Smear_APE<Gimpl>(SmearRho) }, SmearBase{OwnedBase.get()} {
-    GRID_ASSERT(Nc == 3 && "Stout smearing currently implemented only for Nc==3");
+    GRID_ASSERT((Nc == 2 || Nc == 3) && "Stout smearing currently implemented only for Nc = 2 or 3");
   }
 
   ~Smear_Stout() {}  // delete SmearBase...
@@ -116,7 +117,7 @@ public:
   // Repetion of code here (use the Tensor_exp.h function)
   void exponentiate_iQ(GaugeLinkField& e_iQ, const GaugeLinkField& iQ) const {
     // Put this outside
-    // only valid for SU(3) matrices
+    // only valid for SU(2) and SU(3) matrices
 
     // only one Lorentz direction at a time
 
@@ -128,6 +129,17 @@ public:
     GridBase* grid = iQ.Grid();
     GaugeLinkField unity(grid);
     unity = 1.0;
+
+    if constexpr (Nc == 2) {
+      GaugeLinkField iQ2(grid);
+      LatticeComplex u(grid), f0(grid), f1(grid);
+
+      iQ2 = iQ * iQ;
+      set_u(u, iQ2);
+      set_fj(f0, f1, u);
+      e_iQ = f0 * unity + f1 * iQ;
+      return;
+    }
 
     GaugeLinkField iQ2(grid), iQ3(grid);
     LatticeComplex u(grid), w(grid);
@@ -142,6 +154,41 @@ public:
 
     e_iQ = f0 * unity + timesMinusI(f1) * iQ - f2 * iQ2;
   };
+
+  void set_u(LatticeComplex& u, const GaugeLinkField& iQ2) const {
+    // For a traceless anti-hermitian 2x2 matrix A = iQ, A^2 = -u^2 I.
+    u = sqrt(-0.5 * real(trace(iQ2)));
+  }
+
+  void set_fj(LatticeComplex& f0, LatticeComplex& f1,
+              const LatticeComplex& u) const {
+    // SU(2): exp(iQ) = cos(u) I + sinc(u) iQ.
+    // Use the analytic limit at u = 0, including for cold and unsmeared links.
+    GridBase* grid = u.Grid();
+    LatticeComplex u2(grid), safe_u(grid), unity(grid), regular(grid);
+    u2 = u * u;
+    LatticeReal u2real = toReal(u2);
+    unity = 1.0;
+    safe_u = where(u2real < 0.0025, unity, u);
+    f0 = cos(u);
+    f1 = 1.0 - u2 * (1.0/6.0 - u2 * (1.0/120.0 - u2 * (1.0/5040.0 - (1.0/362880.0)*u2)));
+    regular = sin(safe_u) / safe_u;
+    f1 = where(u2real < 0.0025, f1, regular);
+  }
+
+  LatticeComplex func_su2_b(const LatticeComplex& u) const {
+    // (sinc(u) - cos(u))/u^2, needed by the SU(2) exponential derivative.
+    GridBase* grid = u.Grid();
+    LatticeComplex u2(grid), safe_u(grid), b(grid), unity(grid), regular(grid);
+    u2 = u * u;
+    LatticeReal u2real = toReal(u2);
+    unity = 1.0;
+    safe_u = where(u2real < 0.0025, unity, u);
+    b = 1.0/3.0 - u2 * (1.0/30.0 - u2 * (1.0/840.0 - u2 * (1.0/45360.0 - (1.0/3991680.0)*u2)));
+    regular = (sin(safe_u) / safe_u - cos(safe_u)) / (safe_u * safe_u);
+    b = where(u2real < 0.0025, b, regular);
+    return b;
+  }
 
   void set_uw(LatticeComplex& u, LatticeComplex& w, GaugeLinkField& iQ2,
               GaugeLinkField& iQ3) const {

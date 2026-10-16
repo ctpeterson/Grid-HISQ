@@ -131,6 +131,27 @@ public:
                    const GaugeLinkField& GaugeK) const 
   {
     GridBase* grid = iQ.Grid();
+    if constexpr (Nc == 2) {
+      // SU(2) exponential and force, following the original Grid implementation
+      // by Curtis Taylor Peterson (Appendix A of PRD 87, 114507).
+      GaugeLinkField iQ2(grid), B(grid), USigmap(grid), iGamma(grid);
+      GaugeLinkField unity(grid);
+      LatticeComplex u(grid), f0(grid), f1(grid), b(grid);
+      unity = 1.0;
+
+      iQ2 = iQ * iQ;
+      StoutSmearing->set_u(u, iQ2);
+      StoutSmearing->set_fj(f0, f1, u);
+      e_iQ = f0 * unity + f1 * iQ;
+
+      b = StoutSmearing->func_su2_b(u);
+      B = 0.5 * (f1 * unity + b * iQ);
+      USigmap = GaugeK * Sigmap;
+      iGamma = trace(USigmap * B) * iQ + f1 * USigmap;
+      iLambda = -Ta(iGamma);
+      return;
+    }
+
     GaugeLinkField iQ2(grid), iQ3(grid), B1(grid), B2(grid), USigmap(grid);
     GaugeLinkField unity(grid);
     unity = 1.0;
