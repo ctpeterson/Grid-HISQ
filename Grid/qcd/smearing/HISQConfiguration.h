@@ -77,7 +77,7 @@ private:
   static UnitaryProjectionContext _defaultProjection() {
     UnitaryProjectionContext projection(
       CayleyHamiltonProjection, 
-      MIMDCollaborationDerivative
+      CayleyHamiltonDerivative
     );
     projection.setBackupSVD(BACKUPSVD);
     projection.setRelativeSVDTolerance(RELBACKUPSVDTOLERANCE);
@@ -240,9 +240,7 @@ public: // implement opt-in interface
     { // unitary fat7 pullback
       UnitaryProjection<Impl> projection(_ctx.proj());
     
-      if (_ctx.proj().derivativeMethod == JinOsbornDerivative)
-      { projection.derivative(tmp, dSdW, W, V); }
-      else { projection.derivative(tmp, dSdW, V); }
+      projection.derivative(tmp, dSdW, W, V);
 
       _hisf.smearDerivative(dSdU, tmp, *U, _ctx.fat7());
 

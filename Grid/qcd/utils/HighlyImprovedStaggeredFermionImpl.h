@@ -682,7 +682,7 @@ public:
     const GaugeField& U,
     const HISFContext ctx
   ) {
-    UnitaryProjectionContext projCtx(MIMDCollaborationDerivative);
+    UnitaryProjectionContext projCtx(CayleyHamiltonDerivative);
     projCtx.setDerivativeEigenvalueCutoff(ctx.eigenCutoff);
     projCtx.setSVDOnlyDerivative(ctx.svdOnly);
     projCtx.setBackupSVD(ctx.backupSVD);
@@ -697,7 +697,7 @@ public:
     const GaugeField& dZdV, 
     const GaugeField& U
   ) { 
-    UnitaryProjectionContext projCtx(MIMDCollaborationDerivative);
+    UnitaryProjectionContext projCtx(CayleyHamiltonDerivative);
     projCtx.setDerivativeEigenvalueCutoff(REUNITDERIVCUTOFF);
     projCtx.setBackupSVD(BACKUPSVD);
     projCtx.setRelativeSVDTolerance(RELBACKUPSVDTOLERANCE);
@@ -712,7 +712,7 @@ public:
     const GaugeField& V,
     const GaugeField& U
   ) { 
-    UnitaryProjectionContext projCtx(JinOsbornDerivative);
+    UnitaryProjectionContext projCtx(SylvesterDerivative);
     UnitaryProjection<Gimpl> projection(projCtx);
     projection.derivative(dVdU, dZdV, V, U); 
   }

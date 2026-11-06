@@ -501,7 +501,7 @@ public:
   friend accelerator_inline Grid_simd operator/(Grid_simd b, const Scalar_type &a) {
     Grid_simd va;
     vsplat(va, a);
-    return b / a;
+    return b / va;
   }
 
   ///////////////////////

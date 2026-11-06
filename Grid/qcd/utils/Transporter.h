@@ -70,6 +70,25 @@ namespace PeriodicBC {
 #define IMPL(x) template <class Gimpl>                  \
 inline const typename x<Gimpl>::GaugeLinkField x<Gimpl> \
 
+// open pairs of link fields for a shared transport operation
+#define LINK_PAIR_VIEWS(exec) {                                                                 \
+  typedef LatticeView<typename GaugeLinkField::vector_object> GaugeLinkView;                    \
+  std::vector<GaugeLinkView> views;                                                             \
+  std::vector<const typename GaugeLinkField::vector_object*> pointers;                          \
+  int npairs = pairs.size();                                                                    \
+  for (auto& pair : pairs) {                                                                    \
+    for (auto* field : {pair.first, pair.second}) {                                             \
+      views.push_back(field->View(AcceleratorRead));                                            \
+      pointers.push_back(&views.back()[0]);                                                     \
+    }                                                                                           \
+  }                                                                                             \
+  deviceVector<const typename GaugeLinkField::vector_object*> device(pointers.size());          \
+  acceleratorCopyToDevice(pointers.data(), device.data(), pointers.size()*sizeof(pointers[0])); \
+  auto pairs_v = device.data();                                                                 \
+  exec;                                                                                         \
+  for (auto& view : views) view.ViewClose();                                                    \
+}
+
 //
 // convenient data structures
 //
@@ -183,6 +202,7 @@ class Transporter: public Gimpl {
  */
 
 public: INHERIT_GIMPL_TYPES(Gimpl)
+  typedef std::vector<std::pair<const GaugeLinkField*, const GaugeLinkField*>> GaugeLinkPairs;
 
 private:
   int depth;
@@ -409,6 +429,47 @@ public:
 
   inline const GaugeLinkField reverse(int mu) 
   { return CovShiftIdentBck(mu, adj(link(mu))); }
+
+public:
+  GridBinOpClass(BinaryLoopTrace, innerProduct(lhs, rhs));
+
+  /** @brief Closes two paths as tr[a†b], retaining Grid expression fusion */
+  inline auto loopTrace(const GaugeLinkField& a, const GaugeLinkField& b)
+  { return LatticeBinaryExpression<BinaryLoopTrace, GaugeLinkField, GaugeLinkField>(BinaryLoopTrace(), a, b); }
+
+  accelerator_inline static int stapleIndex(int mu, int nu)
+  { return mu*(Nd - 1) + nu - (nu > mu); }
+
+  inline void plaquetteStaples(
+    std::vector<GaugeLinkField>& sf,
+    std::vector<GaugeLinkField>& sb
+  );
+
+  inline const ComplexField parallelogramLoops(
+    const GaugeLinkPairs& pairs,
+    int mu,
+    int nu
+  );
+
+  inline void addRectangleStaples(
+    GaugeLinkField& dmu,
+    GaugeLinkField& dnu,
+    const GaugeLinkField& fm,
+    const GaugeLinkField& fn,
+    const GaugeLinkField& bm,
+    const GaugeLinkField& bn,
+    int mu,
+    int nu,
+    RealD coeff = 1.0
+  );
+
+  inline void addStapleCrossTerms(
+    GaugeLinkField& rs,
+    const GaugeLinkPairs& pairs,
+    int mu,
+    int nu,
+    RealD coeff = 1.0
+  );
 
 public:
   inline const GaugeLinkField _staple(
@@ -756,6 +817,250 @@ IMPL(Transporter)::Cshift(int mu, const GaugeLinkField& u, TransportHeading head
 /** @brief slightly more satisfying name for Cartesian shift */
 IMPL(Transporter)::CovShiftIdent(int mu, const GaugeLinkField& v, TransportHeading heading)
 { return Cshift(mu, v, heading); }
+
+//-- plaquette staples --//
+
+template <class Gimpl>
+inline void Transporter<Gimpl>::plaquetteStaples(
+  std::vector<GaugeLinkField>& sf,
+  std::vector<GaugeLinkField>& sb
+) {
+  /**
+   * @brief Calculates forward and backward staples for each plane
+   * @author Curtis Taylor Peterson
+   * @details
+   * The action and its derivative can both be constructed from 3-link staples.
+   * For each plane μ>ν, first calculate the two plaquette corners:
+   * (1) Aμν(n) = Uμ(n) Uν(n+μ),    Aνμ(n) = Uν(n) Uμ(n+ν).
+   * These are `ta` and `tb`, respectively. Completing each corner gives the
+   * forward staples
+   * (2) Fμν(n) = Aνμ(n) Uν(n+μ)†,
+   *     Fνμ(n) = Aμν(n) Uμ(n+ν)†,
+   * and the backward staples
+   * (3) Bμν(n) = Uν(n-ν)† Aμν(n-ν),
+   *     Bνμ(n) = Uμ(n-μ)† Aνμ(n-μ).
+   * Both Fμν and Bμν run from n to n+μ. The first index is the direction of
+   * the middle link; the second is the direction of the staple's side links.
+   * In the code, F and B are `sf` and `sb`, with μ≠ν packed by
+   * `stapleIndex(mu, nu)`.
+   * Sharing the corners requires six matrix products for all four staples.
+   *
+   * Only halos in μ and ν need refreshing after (2)-(3). The transverse
+   * halos already follow from the padded input links. The stencil stores
+   * geometry and is reused between calls; the staples are rebuilt from U.
+   */
+  tracePush("Transporter::plaquetteStaples");
+  sf.clear(); sb.clear();
+  sf.reserve(Nd*(Nd - 1)); sb.reserve(Nd*(Nd - 1));
+  for (int i = 0; i < Nd*(Nd - 1); ++i) {
+    sf.emplace_back(_pgrid); sb.emplace_back(_pgrid);
+  }
+  for (int mu = 1; mu < Nd; ++mu) {
+    for (int nu = 0; nu < mu; ++nu) {
+      GaugeLinkField ta = CovShiftFwd(mu, nu);
+      GaugeLinkField tb = CovShiftFwd(nu, mu);
+      {
+        auto smu_v = stencil(mu).View(AcceleratorRead);
+        auto snu_v = stencil(nu).View(AcceleratorRead);
+        autoView(um_v, link(mu), AcceleratorRead);
+        autoView(un_v, link(nu), AcceleratorRead);
+        autoView(ta_v, ta, AcceleratorRead);
+        autoView(tb_v, tb, AcceleratorRead);
+        autoView(fm_v, sf[stapleIndex(mu, nu)], AcceleratorWrite);
+        autoView(fn_v, sf[stapleIndex(nu, mu)], AcceleratorWrite);
+        autoView(bm_v, sb[stapleIndex(mu, nu)], AcceleratorWrite);
+        autoView(bn_v, sb[stapleIndex(nu, mu)], AcceleratorWrite);
+
+        accelerator_for(n, _pgrid->oSites(), _pgrid->Nsimd(), {
+          STENCIL_ENTRY(se_pmu, smu_v, 1, n);
+          STENCIL_ENTRY(se_mmu, smu_v, 0, n);
+          STENCIL_ENTRY(se_pnu, snu_v, 1, n);
+          STENCIL_ENTRY(se_mnu, snu_v, 0, n);
+
+          ACCWRITE(fm_v[n], coalescedRead(tb_v[n])*adj(ACCREAD(un_v, se_pmu)));
+          ACCWRITE(fn_v[n], coalescedRead(ta_v[n])*adj(ACCREAD(um_v, se_pnu)));
+          ACCWRITE(bm_v[n], adj(ACCREAD(un_v, se_mnu))*ACCREAD(ta_v, se_mnu));
+          ACCWRITE(bn_v[n], adj(ACCREAD(um_v, se_mmu))*ACCREAD(tb_v, se_mmu));
+        });
+      }
+      for (int i : {stapleIndex(mu, nu), stapleIndex(nu, mu)}) {
+        refresh(sf[i], mu, nu);
+        refresh(sb[i], mu, nu);
+      }
+  } }
+  tracePop("Transporter::plaquetteStaples");
+}
+
+//-- parallelogram loops --//
+
+template <class Gimpl>
+inline const typename Transporter<Gimpl>::ComplexField Transporter<Gimpl>::parallelogramLoops(
+  const GaugeLinkPairs& pairs,
+  int mu,
+  int nu
+) {
+  /**
+   * @brief Closes pairs of staples into parallelogram loops
+   * @author Curtis Taylor Peterson
+   * @details
+   * Each pair (a,b) contains μ and ν staples through a common third direction.
+   * Writing <A,B> := tr[A†B], calculate
+   * (1) H(n) = ∑_{(a,b)} a(n)† b(n),
+   * (2) L(n) = <Uν(n+μ), H(n) Uμ(n+ν)>.
+   * Link unitarity cancels the backtracking segments. Summing (1) before the
+   * common closing product saves one matrix product for each additional pair.
+   * The caller selects the pairs and supplies coefficients and multiplicities;
+   * this method returns their summed complex traces at each site.
+   */
+  ComplexField loops(_pgrid);
+
+  tracePush("Transporter::parallelogramLoops");
+  LINK_PAIR_VIEWS(
+    auto smu_v = stencil(mu).View(AcceleratorRead);
+    auto snu_v = stencil(nu).View(AcceleratorRead);
+    autoView(um_v, link(mu), AcceleratorRead);
+    autoView(un_v, link(nu), AcceleratorRead);
+    autoView(loops_v, loops, AcceleratorWrite);
+
+    accelerator_for(n, _pgrid->oSites(), _pgrid->Nsimd(), {
+      decltype(coalescedRead(um_v[n])) paths;
+      STENCIL_ENTRY(se_pmu, smu_v, 1, n);
+      STENCIL_ENTRY(se_pnu, snu_v, 1, n);
+      paths = Zero();
+      for (int i = 0; i < npairs; ++i)
+        paths = paths + adj(coalescedRead(pairs_v[2*i][n]))*coalescedRead(pairs_v[2*i+1][n]);
+      ACCWRITE(loops_v[n], innerProduct(ACCREAD(un_v, se_pmu), paths*ACCREAD(um_v, se_pnu)));
+    });
+  )
+  tracePop("Transporter::parallelogramLoops");
+  return loops;
+}
+
+//-- rectangle staples --//
+
+template <class Gimpl>
+inline void Transporter<Gimpl>::addRectangleStaples(
+  GaugeLinkField& dmu,
+  GaugeLinkField& dnu,
+  const GaugeLinkField& fm,
+  const GaugeLinkField& fn,
+  const GaugeLinkField& bm,
+  const GaugeLinkField& bn,
+  int mu,
+  int nu,
+  RealD coeff
+) {
+  /**
+   * @brief Accumulates three upper ν and three lower μ rectangle staples
+   * @author Curtis Taylor Peterson
+   * @details
+   * Inputs fm, fn, bm, and bn are Fμν, Fνμ, Bμν, and Bνμ from
+   * `plaquetteStaples`. Shared outer links are factored out before multiplying.
+   * The temporary `backward` holds the lower μ sum before its shift by -ν;
+   * its shifted values follow from the padded inputs without another exchange.
+   * Reversing μ and ν supplies the other three staples in each direction.
+   * Results accumulate into dmu and dnu with weight coeff. The caller chooses
+   * the planes and closes and projects the resulting open paths.
+   */
+  GaugeLinkField backward(_pgrid);
+
+  tracePush("Transporter::addRectangleStaples");
+  ACCELERATOR_SCOPE(
+    auto smu_v = stencil(mu).View(AcceleratorRead);
+    auto snu_v = stencil(nu).View(AcceleratorRead);
+    autoView(um_v, link(mu), AcceleratorRead);
+    autoView(un_v, link(nu), AcceleratorRead);
+    autoView(fm_v, fm, AcceleratorRead);
+    autoView(fn_v, fn, AcceleratorRead);
+    autoView(bm_v, bm, AcceleratorRead);
+    autoView(bn_v, bn, AcceleratorRead);
+    autoView(dm_v, dmu, AcceleratorWrite);
+    autoView(dn_v, dnu, AcceleratorWrite);
+    autoView(backward_v, backward, AcceleratorWrite);
+
+    accelerator_for(n, _pgrid->oSites(), _pgrid->Nsimd(), {
+      STENCIL_ENTRY(se_pmu, smu_v, 1, n);
+      STENCIL_ENTRY(se_pnu, snu_v, 1, n);
+      auto um = coalescedRead(um_v[n]);
+      auto un = ACCREAD(un_v, se_pmu);
+      auto fm = ACCREAD(fm_v, se_pnu);
+      auto fn = ACCREAD(fn_v, se_pmu);
+      auto bm = coalescedRead(bm_v[n]);
+      auto bn = coalescedRead(bn_v[n]);
+      auto corner = um*un;
+      auto paths = bm*un + um*fn;
+
+      ACCWRITE(backward_v[n], adj(bn)*corner + adj(coalescedRead(un_v[n]))*paths);
+      ACCWRITE(dn_v[n], coalescedRead(dn_v[n])
+        + coeff*(corner*adj(fm) + paths*adj(ACCREAD(um_v, se_pnu))));
+    });
+    accelerator_for(n, _pgrid->oSites(), _pgrid->Nsimd(), {
+      STENCIL_ENTRY(se_mnu, snu_v, 0, n);
+      ACCWRITE(dm_v[n], coalescedRead(dm_v[n]) + coeff*ACCREAD(backward_v, se_mnu));
+    });
+  )
+  tracePop("Transporter::addRectangleStaples");
+}
+
+//-- staple cross terms --//
+
+template <class Gimpl>
+inline void Transporter<Gimpl>::addStapleCrossTerms(
+  GaugeLinkField& rs,
+  const GaugeLinkPairs& pairs,
+  int mu,
+  int nu,
+  RealD coeff
+) {
+  /**
+   * @brief Accumulates cross terms between two choices of staple side links
+   * @author Curtis Taylor Peterson
+   * @details
+   * Each pair (u,v) supplies a middle μ link and a side ν link. Together with
+   * the transporter's Uν, the two choices of left/right side link give
+   * (1) Cμν(u,v;n) = v(n) u(n+ν) Uν(n+μ)†
+   *                + Uν(n) u(n+ν) v(n+μ)†
+   *                + v(n-ν)† u(n-ν) Uν(n-ν+μ)
+   *                + Uν(n-ν)† u(n-ν) v(n-ν+μ).
+   * Accumulate coeff times the sum of (1) over the supplied pairs into rs.
+   * The four sums `ta`, `tb`, `tc`, and `td` are formed before multiplication
+   * by their common Uν links, and stay local to each site. Choosing pairs of
+   * forward/backward 3-link staples gives the parallelogram force paths; the
+   * caller makes that choice and applies the final force projection.
+   */
+  tracePush("Transporter::addStapleCrossTerms");
+  LINK_PAIR_VIEWS(
+    auto smu_v = stencil(mu).View(AcceleratorRead);
+    auto snu_v = stencil(nu).View(AcceleratorRead);
+    auto smunu_v = stencil(mu, nu).View(AcceleratorRead);
+    autoView(un_v, link(nu), AcceleratorRead);
+    autoView(rs_v, rs, AcceleratorWrite);
+
+    accelerator_for(n, _pgrid->oSites(), _pgrid->Nsimd(), {
+      decltype(coalescedRead(un_v[n])) ta, tb, tc, td;
+      STENCIL_ENTRY(se_pmu, smu_v, 1, n);
+      STENCIL_ENTRY(se_pnu, snu_v, 1, n);
+      STENCIL_ENTRY(se_mnu, snu_v, 0, n);
+      STENCIL_ENTRY(se_pmu_mnu, smunu_v, 1, n);
+      ta = Zero(); tb = Zero(); tc = Zero(); td = Zero();
+
+      for (int i = 0; i < npairs; ++i) {
+        auto xm_v = pairs_v[2*i];
+        auto xn_v = pairs_v[2*i+1];
+        auto xm_pnu = ACCREAD(xm_v, se_pnu);
+        auto xm_mnu = ACCREAD(xm_v, se_mnu);
+        ta = ta + coalescedRead(xn_v[n])*xm_pnu;
+        tb = tb + xm_pnu*adj(ACCREAD(xn_v, se_pmu));
+        tc = tc + adj(ACCREAD(xn_v, se_mnu))*xm_mnu;
+        td = td + xm_mnu*ACCREAD(xn_v, se_pmu_mnu);
+      }
+      auto paths = ta*adj(ACCREAD(un_v, se_pmu)) + coalescedRead(un_v[n])*tb
+        + tc*ACCREAD(un_v, se_pmu_mnu) + adj(ACCREAD(un_v, se_mnu))*td;
+      ACCWRITE(rs_v[n], coalescedRead(rs_v[n]) + coeff*paths);
+    });
+  )
+  tracePop("Transporter::addStapleCrossTerms");
+}
 
 //-- symmetric staple --//
 
@@ -1174,7 +1479,8 @@ inline void Transporter<Gimpl>::_stapleDerivative(
       else     ACCWRITE(rds_v[n], staple);
 
       // middle link: upper and lower staples
-      if (both) {
+      // noted: "both" is template parameter; compiler choses which branch gets compiled
+      if (both) { 
         STENCIL_ENTRY(se_mmu, smu_v, 0, n);
         STENCIL_ENTRY(se_mmu_pnu, smunu_v, 2, n);
         auto u_x = ACCREAD(u_v, se_0);
@@ -1216,6 +1522,7 @@ IMPL(Transporter)::stapleDerivative(
 ) { return stapleDerivative(link(mu), link(nu), c, mu, nu); }
 
 // undefine macros to prevent conflicts
+#undef LINK_PAIR_VIEWS
 #undef ACCELERATOR_SCOPE
 #undef STENCIL_ENTRY
 #undef ACCREAD
