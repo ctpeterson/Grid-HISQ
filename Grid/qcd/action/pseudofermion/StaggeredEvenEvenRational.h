@@ -123,6 +123,28 @@ public:
               << std::endl;
   }
 
+  StaggeredEvenEvenRational(
+    FermionOperator<Impl>& Op,
+    const StaggeredRationalActionParams& params,
+    const MultiShiftFunction& heatBath,
+    const MultiShiftFunction& action,
+    const MultiShiftFunction& deriv
+  ):_params(params),
+    FermOp(Op),
+    OneEighthAction(heatBath),
+    NegOneQuarterAction(action),
+    NegOneQuarterDeriv(deriv),
+    Phi(Op.FermionRedBlackGrid()) {
+    _scale = std::sqrt(0.5);
+    Phi.Checkerboard() = Even; 
+    Phi = Zero();
+
+    std::cout << GridLogMessage 
+              << action_name() 
+              << " initialize: complete" 
+              << std::endl;
+  }
+
 public:
   virtual std::string action_name() 
   { return "StaggeredEvenEvenRationalPseudoFermionAction"; }

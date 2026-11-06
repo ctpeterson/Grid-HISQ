@@ -144,6 +144,40 @@ public:
               << std::endl;
   }
 
+  StaggeredEvenEvenRatioRational(
+    FermionOperator<Impl>& _numOp,
+    FermionOperator<Impl>& _denOp,
+    const StaggeredRationalActionParams& numParams,
+    const StaggeredRationalActionParams& denParams,
+    const MultiShiftFunction& numHeatBath,
+    const MultiShiftFunction& numAction,
+    const MultiShiftFunction& numDeriv,
+    const MultiShiftFunction& denHeatBath,
+    const MultiShiftFunction& denAction,
+    const MultiShiftFunction& denDeriv
+  ):_numParams(numParams),
+    _denParams(denParams),
+    NumOp(_numOp),
+    DenOp(_denOp),
+    OneEighthNumAction(numAction),
+    OneEighthDenAction(denHeatBath),
+    NegOneEighthNumAction(numHeatBath),
+    NegOneQuarterDenAction(denAction),
+    OneEighthNumDeriv(numDeriv),
+    NegOneQuarterDenDeriv(denDeriv),
+    Phi(_numOp.FermionRedBlackGrid()) {
+    conformable(_numOp.FermionRedBlackGrid(), _denOp.FermionRedBlackGrid());
+
+    _scale = std::sqrt(0.5);
+    Phi.Checkerboard() = Even;
+    Phi = Zero();
+
+    std::cout << GridLogMessage 
+              << action_name() 
+              << " initialize: complete" 
+              << std::endl;
+  }
+
 public:
   virtual std::string action_name()
   { return "StaggeredEvenEvenRatioRationalPseudoFermionAction"; }
