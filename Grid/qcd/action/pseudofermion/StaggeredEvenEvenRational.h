@@ -59,6 +59,7 @@ public:
 
 private:
   RealD _scale;
+  bool _actionNorm = false;
 
   StaggeredRationalActionParams _params;
   
@@ -128,8 +129,10 @@ public:
     const StaggeredRationalActionParams& params,
     const MultiShiftFunction& heatBath,
     const MultiShiftFunction& action,
-    const MultiShiftFunction& deriv
-  ):_params(params),
+    const MultiShiftFunction& deriv,
+    bool actionNorm = false // evaluate ||action(MdagM) Phi||^2 instead of Phi^dag action(MdagM) Phi
+  ):_actionNorm(actionNorm),
+    _params(params),
     FermOp(Op),
     OneEighthAction(heatBath),
     NegOneQuarterAction(action),
@@ -240,11 +243,13 @@ private:
      * (1) Psi = (M^dag M)^{-Nf/4} Phi
      * and calculate S as
      * (2) S = Phi^dagger Psi.
+     * With actionNorm enabled, the supplied rational approximates the square
+     * root of the action kernel instead, and S = ||Psi||^2.
      */
     FermionField Psi(FermOp.FermionRedBlackGrid());
     
     _multiShiftSolve(NegOneQuarterAction, Phi, Psi); // Eqn (1)
-    return innerProduct(Phi, Psi).real();            // Eqn (2)
+    return _actionNorm ? norm2(Psi) : innerProduct(Phi, Psi).real();
   }
 
   template <class Derivative>

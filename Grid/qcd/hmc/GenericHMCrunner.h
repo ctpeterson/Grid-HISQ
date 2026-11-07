@@ -125,12 +125,18 @@ public:
 
   template <class SmearingPolicy>
   void Run(SmearingPolicy &S) {
-    Runner(S);
+    Run(S, [](auto&) {});
+  }
+
+  // Configure the constructed integrator before the first trajectory.
+  template <class SmearingPolicy, class Setup>
+  void Run(SmearingPolicy &S, Setup setup) {
+    Runner(S, setup);
   }
 
   void Run(){
     NoSmearing<Implementation> S;
-    Runner(S);
+    Run(S);
   }
 
   //Use the checkpointer to initialize the RNGs and the gauge field, writing the resulting gauge field into U.
@@ -180,8 +186,8 @@ public:
   //////////////////////////////////////////////////////////////////
 
 private:
-  template <class SmearingPolicy>
-  void Runner(SmearingPolicy &Smearing) {
+  template <class SmearingPolicy, class Setup>
+  void Runner(SmearingPolicy &Smearing, Setup& setup) {
     auto UGrid = Resources.GetCartesian();
     Field U(UGrid);
 
@@ -194,6 +200,8 @@ private:
     MDynamics.setMomentumFilter(*(Resources.GetMomentumFilter()));
 
     Smearing.set_Field(U);
+
+    setup(MDynamics);
 
     HybridMonteCarlo<TheIntegrator> HMC(Parameters, MDynamics,
                                         Resources.GetSerialRNG(),

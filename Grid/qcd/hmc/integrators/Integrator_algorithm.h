@@ -140,7 +140,7 @@ template <class FieldImplementation_, class SmearingPolicy, class Representation
 class MinimumNorm2 : public Integrator<FieldImplementation_, SmearingPolicy, RepresentationPolicy> 
 {
 private:
-  const RealD lambda = 0.1931833275037836;
+  const RealD lambda = omelyan2_lambda;
 
 public:
   typedef FieldImplementation_ FieldImplementation;
@@ -198,10 +198,8 @@ template <class FieldImplementation_, class SmearingPolicy, class Representation
 class ForceGradient : public Integrator<FieldImplementation_, SmearingPolicy, RepresentationPolicy> 
 {
 private:
-  const RealD lambda = 1.0 / 6.0;
-  const RealD chi = 1.0 / 72.0;
-  const RealD xi = 0.0;
-  const RealD theta = 0.0;
+  const RealD lambda = force_gradient_lambda;
+  const RealD chi = force_gradient_chi;
 
 public:
   typedef FieldImplementation_ FieldImplementation;
@@ -217,23 +215,7 @@ public:
   std::string integrator_name(){return "ForceGradient";}
   
   void FG_update_P(Field& U, int level, double fg_dt, double ep) {
-    Field Ufg(U.Grid());
-    Field Pfg(U.Grid());
-    Ufg = U;
-    Pfg = Zero();
-    std::cout << GridLogIntegrator << "FG update " << fg_dt << " " << ep << std::endl;
-    // prepare_fg; no prediction/result cache for now
-    // could relax CG stopping conditions for the
-    // derivatives in the small step since the force gets multiplied by
-    // a tiny dt^2 term relative to main force.
-    //
-    // Presently 4 force evals, and should have 3, so 1.33x too expensive.
-    // could reduce this with sloppy CG to perhaps 1.15x too expensive
-    // even without prediction.
-    this->update_P(Pfg, Ufg, level, fg_dt);
-    Pfg = Pfg*(1.0/fg_dt);
-    this->update_U(Pfg, Ufg, fg_dt);
-    this->update_P(Ufg, level, ep);
+    this->update_P(U, level, ep, 0.5*fg_dt*ep);
   }
 
   void step(Field& U, int level, int _first, int _last) {

@@ -9,6 +9,7 @@ Copyright (C) 2015
 Author: Azusa Yamaguchi <ayamaguc@staffmail.ed.ac.uk>
 Author: Peter Boyle <paboyle@ph.ed.ac.uk>
 Author: Guido Cossu <cossu@post.kek.jp>
+Author: Curtis Taylor Peterson <curtistaylorpetersonwork@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -33,6 +34,11 @@ directory
 #define INTEGRATOR_INCLUDED
 
 #include <memory>
+#include <cmath>
+#include <functional>
+#include <initializer_list>
+#include <utility>
+#include <vector>
 
 NAMESPACE_BEGIN(Grid);
 
@@ -100,6 +106,35 @@ public:
     t_P[level] += ep;
     update_P(P, U, level, ep);
     std::cout << GridLogIntegrator << "[" << level << "] P " << " dt " << ep << " : t_P " << t_P[level] << std::endl;
+  }
+
+  // Displaced-force approximation to b*V + c*[V,[T,V]], shared by both
+  // ForceGradient and InterleavedIntegrator. Only b advances the clock.
+  void update_P(Field& U, int level, double b, double c) {
+    if (c == 0) {
+      if (b != 0) update_P(U, level, b);
+      return;
+    }
+    Field force(U.Grid()), shifted(U.Grid());
+    force = Zero();
+    update_P(force, U, level, 1.0);
+    if (b != 0) {
+      shifted = U;
+      update_U(force, shifted, 2*c/b);
+      update_P(shifted, level, b);
+    } else {
+      // Cancellation can leave a pure gradient. The centered force difference
+      // gives 2c*DF.F + O(h^5), with c=O(h^3) and delta=O(h).
+      double delta = std::cbrt(std::abs(c));
+      for (int sign : {-1, 1}) {
+        shifted = U;
+        update_U(force, shifted, sign*delta);
+        update_P(P, shifted, level, sign*c/delta);
+      }
+    }
+    // The scratch updates bind these caches to shifted; restore the real field.
+    Smearer.set_Field(U);
+    Representations.update(U);
   }
 
   // to be used by the actionlevel class to iterate
@@ -556,6 +591,276 @@ public:
 
   }
 
+};
+
+/**
+ * @brief Generic composition and interleaving of molecular dynamics integrators
+ * @author Xiao-Yong Jin (MDevolve), Curtis Taylor Peterson (Grid adaptation)
+ * @details
+ * C++ adaptation of Xiao-Yong Jin's MDevolve for composing integrators from
+ * weighted updates. The implementation names the shared primitive explicitly
+ * and uses a recursive cursor in place of Nim's interruption machinery.
+ *
+ * References:
+ * * MDevolve: https://github.com/jxy/MDevolve
+ * * MDevolve implementation: https://github.com/jxy/MDevolve/blob/master/src/mdevolve.nim
+ *
+ * Acknowledgements:
+ *   The updater dependencies and fusion, serial composition, shared-step
+ *   normalization, signed tie-breaking, and formula factories are adapted
+ *   directly from Xiao-Yong Jin's MDevolve. The original MIT notice below
+ *   applies to this adapted section.
+ */
+
+/*************************************************************************************
+Copyright (c) 2018-2020 Xiao-Yong Jin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*************************************************************************************/
+
+struct Updater {
+  std::vector<double> pending;
+  std::function<void(const std::vector<double>&)> run;
+
+  Updater(
+    unsigned components, 
+    std::function<void(const std::vector<double>&)> f
+  ): pending(components, 0), run(f) {}
+
+  void finish() {
+    for (double t : pending) if (t != 0) 
+    { run(pending); for (double& w : pending) w = 0; return; }
+  }
+};
+
+struct IntegratorScheme;
+struct Stage { IntegratorScheme* integrator; double coefficient; };
+
+struct IntegratorScheme {
+  Updater* updater = nullptr;
+  unsigned component = 0, power = 1, steps = 1;
+  std::vector<Updater*> needs;
+  std::vector<Stage> stages;
+  std::size_t cursor = 0;
+
+  IntegratorScheme(
+    Updater& u, 
+    unsigned slot, 
+    std::initializer_list<Updater*> dependencies,
+    unsigned time_power = 1
+  ): updater(&u), component(slot), power(time_power), needs(dependencies) { }
+
+  IntegratorScheme(std::vector<Stage> sequence, unsigned n = 1): steps(n), stages(std::move(sequence)) { }
+
+  Stage evolve(double t, IntegratorScheme* shared = nullptr) {
+    if (this == shared) { if (cursor++ == 0) return {this,t}; } 
+    else if (updater) 
+    { if (t != 0) { for (auto* u : needs) u->finish(); updater->pending[component] += t; } return {}; } 
+    else if (t != 0) {
+      const double dt = t / steps;
+      for (; cursor < steps * stages.size(); ++cursor) {
+        auto stage = stages[cursor % stages.size()];
+        double weight = stage.coefficient * dt;
+        auto& child = *stage.integrator;
+
+        if (child.updater) {
+          for (unsigned k = 1; k < child.power; ++k) weight *= dt;
+          if (&child == shared) { ++cursor; return {&child, weight}; }
+        }
+        auto update = child.evolve(weight, shared);
+        if (update.integrator) { return update; }
+    } }
+    cursor = 0;
+    return { };
+  }
+
+  void finish() 
+  { if (updater) { updater->finish(); } else { for (auto s : stages) { s.integrator->finish(); } } }
+
+  double absolute_scale(const IntegratorScheme& shared) const {
+    double result = 0;
+    if (this == &shared) { return 1; }
+    for (auto s : stages) { result += std::abs(s.coefficient) * s.integrator->absolute_scale(shared); }
+    return result;
+  }
+};
+
+// MDevolve's shared-update coordinator. The caller names the shared primitive
+// explicitly. Other updates in different branches must commute.
+struct Parallel {
+  struct Branch {
+    IntegratorScheme* integrator;
+    double scale, remaining = 0, progress = 0;
+    bool active = false;
+
+    void advance(double t, IntegratorScheme& shared) {
+      auto s = integrator->evolve(t, &shared);
+      active = s.integrator != nullptr;
+      remaining = s.coefficient;
+      progress = std::abs(remaining / scale);
+    }
+  };
+
+  IntegratorScheme& shared;
+  std::vector<Branch> branches;
+  double tolerance = 1e-12;
+
+  Parallel(IntegratorScheme& common, const std::vector<IntegratorScheme*>& list): shared(common) 
+  { set_branches(list); }
+
+  void add(IntegratorScheme& branch) { branches.push_back({&branch,branch.absolute_scale(shared)}); }
+
+  void set_branches(const std::vector<IntegratorScheme*>& list) 
+  { branches.clear(); for (auto* branch : list) add(*branch); }
+
+  void evolve(double t) {
+    for (auto& b : branches) b.advance(t, shared);
+    while (true) {
+      Branch* first = nullptr;
+
+      for (int i = int(branches.size()) - 1; i >= 0; --i) {
+        auto& b = branches[i];
+        if (b.active && (!first || b.progress < first->progress - tolerance ||
+            (b.progress < first->progress + tolerance &&
+             b.remaining < first->remaining + tolerance))) first = &b;
+      }
+
+      if (!first) break;
+      const double interval = first->remaining, progress = first->progress;
+      shared.evolve(interval);
+      for (auto& b : branches) if (b.active) {
+        b.remaining -= interval;
+        b.progress = std::abs(b.progress - progress);
+        if (std::abs(b.remaining) < tolerance) b.remaining = 0;
+        if (b.progress < tolerance) b.progress = 0;
+        if (b.remaining == 0 && b.progress == 0) b.advance(t, shared);
+      }
+    }
+  }
+
+  void finish() { for (auto& b : branches) b.integrator->finish(); }
+};
+
+// Formula factories are separate from evolution. Arguments are named,
+// caller-owned integrators; A or B may themselves be serial compositions.
+// These constants are also used by Grid's existing integrator classes.
+constexpr double omelyan2_lambda = 0.1931833275037836;
+constexpr double force_gradient_lambda = 1.0/6;
+constexpr double force_gradient_chi = 1.0/72;
+
+inline IntegratorScheme leapfrog(IntegratorScheme& A, IntegratorScheme& B, unsigned steps = 1) 
+{ return IntegratorScheme({{&A,0.5}, {&B,1.0}, {&A,0.5}}, steps); }
+
+inline IntegratorScheme omelyan2(
+  IntegratorScheme& A, 
+  IntegratorScheme& B, 
+  unsigned steps = 1,
+  double lambda = omelyan2_lambda) 
+{ return IntegratorScheme({{&A, lambda}, {&B, 0.5}, {&A, 1-2*lambda}, {&B, 0.5}, {&A, lambda}}, steps); }
+
+inline IntegratorScheme force_gradient4(
+  IntegratorScheme& T, 
+  IntegratorScheme& V, 
+  IntegratorScheme& G,
+  unsigned steps = 1
+) { 
+  return IntegratorScheme(
+    {
+      {&V,force_gradient_lambda}, 
+      {&T,0.5},
+      {&V,1-2*force_gradient_lambda}, 
+      {&G,force_gradient_chi},
+      {&T,0.5}, 
+      {&V,force_gradient_lambda}
+    }, 
+    steps
+  );
+}
+
+inline IntegratorScheme triple_jump(IntegratorScheme& S, unsigned order, unsigned steps = 1) {
+  const double a = 1 / (2 - std::pow(2.0, 1.0/(order+1)));
+  return IntegratorScheme({{&S,a}, {&S,1-2*a}, {&S,a}}, steps);
+}
+
+/**
+ * @brief Grid adapter for the MDevolve-derived integrator core
+ * @details
+ * Action levels are independent groups; their multipliers count complete
+ * branch periods per common step. The four-argument constructor uses OMF2.
+ *
+ * T, V[level], and G[level] are the drift, force, and force-gradient primitives.
+ * Configure schemes, then call evolution.set_branches with the desired roots.
+ * Keep referenced nodes at stable addresses; configure only between trajectories.
+ */
+template <class FieldImplementation_, class SmearingPolicy, class RepresentationPolicy>
+class InterleavedIntegrator: public Integrator<FieldImplementation_, SmearingPolicy, RepresentationPolicy> {
+private:
+  typename FieldImplementation_::Field* current_U = nullptr;
+
+public:
+  Updater position, momentum;
+  IntegratorScheme T;
+  std::vector<IntegratorScheme> V, G, schemes;
+  Parallel evolution;
+
+public:
+  InterleavedIntegrator(
+    GridBase* grid,
+    IntegratorParameters par,
+    ActionSet<typename FieldImplementation_::Field, RepresentationPolicy>& actions,
+    SmearingPolicy& smearing
+  ):
+    Integrator<FieldImplementation_, SmearingPolicy, RepresentationPolicy>(grid, par, actions, smearing),
+    position(1, nullptr),
+    momentum(2 * actions.size(), nullptr),
+    T(position, 0, {&momentum}),
+    evolution(T, { }) {
+    position.run = [this](const std::vector<double>& dt) { this->update_U(*current_U, dt[0]); };
+
+    momentum.run = [this](const std::vector<double>& kicks) {
+      for (int level = 0; level < this->levels; ++level) {
+        const double force = kicks[level];
+        const double gradient = kicks[this->levels + level];
+        this->update_P(*current_U, level, force, gradient);
+      }
+    };
+
+    V.reserve(this->levels);
+    G.reserve(this->levels);
+    schemes.reserve(this->levels);
+
+    for (unsigned level = 0; level < this->levels; ++level) {
+      V.push_back(IntegratorScheme(momentum, level, {&position}));
+      G.push_back(IntegratorScheme(momentum, this->levels + level, {&position}, 3));
+    }
+
+    for (unsigned level = 0; level < this->levels; ++level) {
+      schemes.push_back(omelyan2(T, V[level], this->as[level].multiplier));
+      evolution.add(schemes.back());
+    }
+  }
+
+  InterleavedIntegrator(const InterleavedIntegrator&) = delete;
+  std::string integrator_name() override { return "InterleavedIntegrator"; }
+
+  void step(typename FieldImplementation_::Field& U, int, int, int last) override 
+  { current_U = &U; evolution.evolve(this->Params.trajL / this->Params.MDsteps); if (last) evolution.finish(); }
 };
 
 NAMESPACE_END(Grid);
