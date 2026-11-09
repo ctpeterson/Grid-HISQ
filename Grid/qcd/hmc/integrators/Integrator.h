@@ -643,10 +643,8 @@ struct Updater {
     std::function<void(const std::vector<double>&)> f
   ): pending(components, 0), run(f) {}
 
-  void finish() {
-    for (double t : pending) if (t != 0) 
-    { run(pending); for (double& w : pending) w = 0; return; }
-  }
+  void finish()
+  { for (double t : pending) if (t != 0) { run(pending); for (double& w : pending) w = 0; return; } }
 };
 
 struct IntegratorScheme;
@@ -750,8 +748,7 @@ struct Parallel {
         if (std::abs(b.remaining) < tolerance) b.remaining = 0;
         if (b.progress < tolerance) b.progress = 0;
         if (b.remaining == 0 && b.progress == 0) b.advance(t, shared);
-      }
-    }
+    } }
   }
 
   void finish() { for (auto& b : branches) b.integrator->finish(); }
@@ -765,7 +762,7 @@ constexpr double force_gradient_lambda = 1.0/6;
 constexpr double force_gradient_chi = 1.0/72;
 
 inline IntegratorScheme leapfrog(IntegratorScheme& A, IntegratorScheme& B, unsigned steps = 1) 
-{ return IntegratorScheme({{&A,0.5}, {&B,1.0}, {&A,0.5}}, steps); }
+{ return IntegratorScheme({{&A, 0.5}, {&B, 1.0}, {&A, 0.5}}, steps); }
 
 inline IntegratorScheme omelyan2(
   IntegratorScheme& A, 
@@ -782,12 +779,12 @@ inline IntegratorScheme force_gradient4(
 ) { 
   return IntegratorScheme(
     {
-      {&V,force_gradient_lambda}, 
-      {&T,0.5},
-      {&V,1-2*force_gradient_lambda}, 
-      {&G,force_gradient_chi},
-      {&T,0.5}, 
-      {&V,force_gradient_lambda}
+      {&V, force_gradient_lambda}, 
+      {&T, 0.5},
+      {&V, 1-2*force_gradient_lambda}, 
+      {&G, force_gradient_chi},
+      {&T, 0.5}, 
+      {&V, force_gradient_lambda}
     }, 
     steps
   );
