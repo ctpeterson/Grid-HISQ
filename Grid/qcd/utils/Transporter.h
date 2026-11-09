@@ -204,6 +204,10 @@ class Transporter: public Gimpl {
 public: INHERIT_GIMPL_TYPES(Gimpl)
   typedef std::vector<std::pair<const GaugeLinkField*, const GaugeLinkField*>> GaugeLinkPairs;
 
+  static constexpr uint64_t stapleFlopsPerSite() { return 4*Nc*Nc*(8*Nc-2) + 2*Nc*Nc; }
+  static constexpr uint64_t addStapleFlopsPerSite() { return stapleFlopsPerSite() + 4*Nc*Nc; }
+  static constexpr uint64_t stapleDerivativeFlopsPerSite() { return 11*Nc*Nc*(8*Nc-2) + 14*Nc*Nc; }
+
 private:
   int depth;
 

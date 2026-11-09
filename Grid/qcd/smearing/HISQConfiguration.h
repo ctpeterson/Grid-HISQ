@@ -140,6 +140,9 @@ private:
   mutable HighlyImprovedStaggeredFermionImpl<Impl> _hisf;
   HISQContext _ctx;
   std::vector<RealD> _epsilons;
+  bool _reportWork = false, _workCached = false;
+  double _linkFlops = 0.0, _pullbackBaseFlops = 0.0, _asqtadFlops = 0.0;
+  double _inputAddFlops = 0.0;
 
 private:
   GaugeField* U; 
@@ -150,7 +153,7 @@ private:
 public:
   /** @brief constructor for opt-in interface */
   HISQConfiguration(GridCartesian* grid, HISQContext ctx): 
-    _hisf(grid, false), 
+    _hisf(grid),
     U(NULL), 
     V(grid),
     W(grid),
@@ -166,6 +169,38 @@ public:
 private:
   void _validateReadiness() const 
   { GRID_ASSERT(this->_state == ConfigurationState::Ready); GRID_ASSERT(U != NULL); }
+
+private:
+  void _cacheWorkModels() {
+    using HISF = HighlyImprovedStaggeredFermionImpl<Impl>;
+    using Projection = UnitaryProjection<Impl>;
+
+    GridCartesian* grid = _hisf.ugrid;
+    constexpr uint64_t multiply = Nc*Nc*(8*Nc-2), add = 2*Nc*Nc;
+    const double links = double(grid->lSites())*Nd;
+    double padded = 1.0;
+
+    for (int d = 0; d < Nd; ++d)
+    { padded *= grid->LocalDimensions()[d] + (grid->_processors[d] > 1 ? 2 : 0); }
+    _linkFlops = padded*(HISF::smearFlopsPerSite(_ctx.fat7()) + HISF::smearFlopsPerSite(_ctx.asqtad()));
+    _linkFlops += links*Projection::projectionFlopsPerLink(_ctx.proj());
+    _pullbackBaseFlops = padded*HISF::derivativeFlopsPerSite(_ctx.fat7())
+      + links*(Projection::derivativeFlopsPerLink(_ctx.proj()) + multiply);
+    _asqtadFlops = padded*HISF::derivativeFlopsPerSite(_ctx.asqtad());
+    _inputAddFlops = links*add;
+    _workCached = true;
+  }
+
+public:
+  // Reporting appends cached work models to the existing timing messages.
+  // It introduces no timers, accelerator fences or device-side work counters.
+  void setPerformanceReporting(bool enabled) 
+  { _reportWork = enabled; if (enabled && !_workCached) { _cacheWorkModels(); } }
+  
+  double linkFlopsModel() const { return _linkFlops; }
+  
+  double pullbackFlopsModel(size_t inputs, size_t asqtadInputs) const 
+  { return _pullbackBaseFlops + inputs*_inputAddFlops + asqtadInputs*_asqtadFlops; }
 
 public: // provide promises: bound to operators by Action's signContract methods
   /** @brief Register default smearing and projection with the requested epsilon */
@@ -198,22 +233,24 @@ public: // implement opt-in interface
     _hisf.project(W, V, _ctx.proj());
     _hisf.smear(X, W, _ctx.asqtad());
 
-    std::cout << GridLogMessage 
-              << "Smearing in " 
-              << (usecond() - begin) 
-              << " ms" 
-              << std::endl; 
+    auto& out = std::cout << GridLogMessage;
+    out << "Smearing in " << (usecond() - begin) << " ms";
+    if (_reportWork) out << " flops = " << _linkFlops << " sites = " << U->Grid()->lSites()
+                         << " model = analytic-core";
+    out << std::endl;
     this->fulfilled();
   }
 
   void pullback(GaugeField& dSdU, PrimalCotangentPairs<GaugeField>& inputs) const {
     conformable(dSdU.Grid(), V.Grid());
     _validateReadiness();
+    size_t asqtadInputs = 0;
     for (const auto& input : inputs) {
       const auto& primal = input.primal();
       GRID_ASSERT(primal.owner() == this && "owner mismatch");
       GRID_ASSERT(primal.id() <= _epsilons.size());
       conformable(input, V);
+      if (_reportWork && primal.id() != 0) ++asqtadInputs;
     }
 
     double start = usecond();
@@ -249,11 +286,11 @@ public: // implement opt-in interface
     
     this->leftTrivializedCotangent(dSdU, *U);
 
-    std::cout << GridLogMessage 
-              << "GaugeConfiguration: Smeared Force chain rule took " 
-              << (usecond() - start) 
-              << " ms" 
-              << std::endl; 
+    auto& out = std::cout << GridLogMessage;
+    out << "GaugeConfiguration: Smeared Force chain rule took " << (usecond() - start) << " ms";
+    if (_reportWork) out << " flops = " << pullbackFlopsModel(inputs.size(), asqtadInputs)
+                         << " sites = " << U->Grid()->lSites() << " model = analytic-core";
+    out << std::endl;
   };
 
 public: // implement legacy interface

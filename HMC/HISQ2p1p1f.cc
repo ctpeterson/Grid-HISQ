@@ -45,7 +45,13 @@ directory
  */
 
 #include <Grid/Grid.h>
+#include <cstdio>
 #include <fstream>
+#include <initializer_list>
+#include <iterator>
+#include <chrono>
+#include <iomanip>
+#include <streambuf>
 #include <deque>
 #include <limits>
 #include <map>
@@ -55,9 +61,31 @@ directory
 using namespace Grid;
 
 ////////////////////////////////////////////////////////////////
-// Typedefs
+// Driver types and MILC records
 ////////////////////////////////////////////////////////////////
-typedef GenericHMCRunner<InterleavedIntegrator> HMCWrapper;
+
+// MILC's node0_printf format, kept verbatim by MILCOutput
+template <class... Args>
+std::string milcRecord(const char* format, Args... args) {
+  std::string record(std::snprintf(nullptr, 0, format, args...), '\0');
+  std::snprintf(record.data(), record.size() + 1, format, args...);
+  return record;
+}
+
+class MILCGaugeImpl: public PeriodicGimplR {
+public:
+  inline static bool report = false;
+
+  static void update_field(Field& P, Field& U, double ep) {
+    const double start = report ? usecond() : 0.0;
+    PeriodicGimplR::update_field(P, U, ep);
+    if (report) std::cout << GridLogMessage << milcRecord(
+      "LINK_UPDATE: time = %e (Grid update_field D)", (usecond() - start)*1.0e-6
+    ) << std::endl;
+  }
+};
+
+typedef HMCWrapperTemplate<MILCGaugeImpl, InterleavedIntegrator> HMCWrapper;
 typedef PlaquetteMod<HMCWrapper::ImplPolicy> PlaqObs;
 
 typedef ImprovedStaggeredFermionD StaggeredFermionOperator;
@@ -67,6 +95,442 @@ typedef StaggeredEvenEvenRational<FermionImplPolicy> FermionAction;
 typedef PeriodicGimplD Gimpl;
 
 typedef XmlReader Serialiser;
+
+////////////////////////////////////////////////////////////////
+// MILC trajectory output, scoped to this driver's Run call
+////////////////////////////////////////////////////////////////
+
+// MILC's performance records depend on its solver/backend and compile-time
+// CGTIME/FLTIME/FFTIME options. Use Grid's staggered solver work models;
+// mixed output also retains the original residuals and counters.
+class MILCPerformanceFormatter {
+  std::ostream& out_;
+  int steps_, warmupsEnd_, interval_, trajectory_ = -1;
+  double localVolume_;
+  bool md_ = false, warmupsPrinted_ = false;
+  long long totalIterations_ = 0, mdIterations_ = 0;
+  double measuredIterationsPerStep_ = 0.0;
+  int measurements_ = 0;
+  // Solves are synchronous; keep the current solve until its elapsed-time record.
+  struct Solve {
+    int masses = 0, iterations = 0;
+    bool converged = false, reported = false;
+  } solve_;
+  std::string timerSection_;
+  double gaugeActionFlops_ = 0.0, gaugeForceFlops_ = 0.0;
+  double pendingGaugeSeconds_ = -1.0;
+  int gaugeActionCalls_ = 0;
+  bool gaugeSize_ = false;
+  int refreshing_ = -1;
+  std::map<int, double> refreshSolverSeconds_;
+
+  void work(double flops, double seconds) {
+    if (flops <= 0.0) return;
+    out_ << " flops/site = " << flops/localVolume_ << " flops = " << flops;
+    if (seconds > 0.0) out_ << " mflops = " << flops/(1.0e6*seconds);
+  }
+
+  void cg(double seconds, const char* kind, bool multishift = false) {
+    if (!solve_.converged || solve_.reported) return;
+    // Test_staggered_multishift.cc: (1205+15*degree)*V*iterations.
+    // Test_staggered_cg_schur.cc: 1146*V*iterations (DeoDoe only).
+    // MILC reports throughput per rank; these are analytic work models, not
+    // hardware instruction counts. Solver elapsed excludes residual checking.
+    const double perSite = multishift ? 1205.0 + 15.0 * solve_.masses : 1146.0;
+    const double flops = perSite * localVolume_ * solve_.iterations;
+    out_ << std::scientific << std::setprecision(6) << "CONGRAD5:";
+    if (seconds >= 0.0) out_ << " time = " << seconds;
+    out_ << " (Grid " << kind << " D) masses = " << solve_.masses
+         << " iters = " << solve_.iterations;
+    if (seconds > 0.0) out_ << " mflops = " << flops / (1.0e6 * seconds);
+    out_ << " flops = " << flops << '\n';
+    if (multishift && refreshing_ >= 0) refreshSolverSeconds_[refreshing_] += seconds;
+    solve_.reported = true;
+  }
+  void iterations(int n) {
+    if (solve_.converged) return;
+    solve_.iterations = n;
+    solve_.converged = true;
+    totalIterations_ += n;
+    if (md_) mdIterations_ += n;
+  }
+
+public:
+  MILCPerformanceFormatter(std::ostream& out, int steps, int start, int warmups, int interval,
+                           double volume = 1.0, int ranks = 1)
+    : out_(out), steps_(steps), warmupsEnd_(start + warmups), interval_(interval),
+      localVolume_(volume / ranks) {}
+
+  void line(const std::string& text) {
+    std::smatch m;
+    static const std::regex trajectory("-- # Trajectory = ([0-9]+)");
+    if (std::regex_search(text, m, trajectory)) {
+      trajectory_ = std::stoi(m[1]);
+      mdIterations_ = 0;
+      md_ = false; refreshing_ = -1; refreshSolverSeconds_.clear();
+      timerSection_.clear();
+      gaugeActionCalls_ = 0; pendingGaugeSeconds_ = -1.0;
+      gaugeSize_ = false;
+      if (trajectory_ >= warmupsEnd_) { finishWarmups(); }
+    }
+    static const std::regex refresh("refresh \\[([0-9]+)\\]\\[([0-9]+)\\]");
+    if (std::regex_search(text, m, refresh)) refreshing_ = m[1] == "0" ? std::stoi(m[2]) : -1;
+    if (text.find("Compute initial action") != std::string::npos) refreshing_ = -1;
+    if (text.find("Molecular Dynamics evolution") != std::string::npos) md_ = true;
+    if (text.find("Compute final action") != std::string::npos) md_ = false;
+
+    static const std::regex shift("ConjugateGradientMultiShift: shift ([0-9]+) target resid");
+    if (std::regex_search(text, m, shift)) {
+      const int index = std::stoi(m[1]);
+      if (index == 0) solve_ = Solve{};
+      solve_.masses = std::max(solve_.masses, index + 1);
+    }
+    static const std::regex multiDone("CGMultiShift: All shifts have converged iteration ([0-9]+)");
+    if (std::regex_search(text, m, multiDone)) iterations(std::stoi(m[1]));
+    if (text.find("ConjugageGradient::LogBegin") != std::string::npos ||
+        text.find("ConjugateGradient::LogBegin") != std::string::npos) solve_ = Solve{};
+    static const std::regex singleDone("ConjugateGradient Converged on iteration ([0-9]+)");
+    if (std::regex_search(text, m, singleDone)) {
+      solve_ = Solve{};
+      solve_.masses = 1;
+      iterations(std::stoi(m[1]));
+    }
+    if (text.find("ConjugateGradient guess is converged already") != std::string::npos) {
+      solve_ = Solve{};
+      solve_.masses = 1;
+      iterations(0);
+      cg(-1.0, "cg already-converged");
+    }
+    static const std::regex solverTime("(Solver Elapsed|[ :\\t]Elapsed) +([0-9.eE+-]+) s");
+    if (std::regex_search(text, m, solverTime)) {
+      const bool multishift = m[1] != "Solver Elapsed";
+      cg(std::stod(m[2]), multishift ? "multicg" : "cg", multishift);
+    }
+
+    static const std::regex model("GaugeWorkModel: action = ([0-9.eE+-]+) force = ([0-9.eE+-]+)");
+    if (text.find("GaugeWorkModel:") != std::string::npos && std::regex_search(text, m, model)) {
+      gaugeActionFlops_ = std::stod(m[1]); gaugeForceFlops_ = std::stod(m[2]);
+    }
+    if (text.find("S [1][0] H = ") != std::string::npos) ++gaugeActionCalls_;
+    // HISQ's existing logs label usecond() differences as "ms"; convert microseconds.
+    static const std::regex hisqTime(
+      "(Smearing in|Smeared Force chain rule took) ([0-9.eE+-]+) ms"
+      "( flops = ([0-9.eE+-]+) sites = ([0-9.eE+-]+))?");
+    if ((text.find("Smearing in ") != std::string::npos ||
+         text.find("Smeared Force chain rule took ") != std::string::npos) &&
+        std::regex_search(text, m, hisqTime)) {
+      const bool smear = m[1] == "Smearing in";
+      const double seconds = std::stod(m[2])*1.0e-6;
+      out_ << std::scientific << std::setprecision(6)
+           << (smear ? "FLTIME" : "FFTIME") << ": time = " << seconds << " (HISQ Grid";
+      if (m[4].matched) { out_ << " analytic-core"; }
+      if (!smear) { out_ << " pullback"; }
+      out_ << " D)";
+      if (m[4].matched) { work(std::stod(m[4]), seconds); }
+      out_ << '\n';
+    }
+    static const std::regex trajectoryTime("Total time for trajectory \\(s\\): ([0-9.eE+-]+)");
+    if (std::regex_search(text, m, trajectoryTime)) {
+      out_ << std::scientific << std::setprecision(6)
+           << "Aggregate time to do one trajectory " << std::stod(m[1]) << '\n';
+      const int measuring = trajectory_ + 1 - warmupsEnd_;
+      if (steps_ > 0 && interval_ > 0 && measuring > 0 && measuring % interval_ == 0) {
+        // MILC update() returns integer iters/steps before control.c averages.
+        measuredIterationsPerStep_ += mdIterations_ / steps_;
+        ++measurements_;
+      }
+    }
+    if (text.find("Refresh cumulative timings") != std::string::npos) timerSection_ = "refresh";
+    if (text.find("Action cumulative timings") != std::string::npos) timerSection_ = "action";
+    if (text.find("Force cumulative timings") != std::string::npos) timerSection_ = "force";
+    if (text.find("Dslash counts") != std::string::npos) timerSection_.clear();
+    static const std::regex actionTimer("([A-Za-z][A-Za-z0-9_]*)\\[([0-9]+)\\]\\[([0-9]+)\\] +([0-9.eE+-]+) s");
+    if (!timerSection_.empty() && std::regex_search(text, m, actionTimer)) {
+      const bool gauge = m[2] == "1";
+      const char* tag = timerSection_ == "force" ? (gauge ? "GFTIME" : "FFTIME") : "GRID_ACTIONTIME";
+      const double seconds = std::stod(m[4]);
+      if (gauge && timerSection_ == "force") pendingGaugeSeconds_ = seconds;
+      else {
+        out_ << std::scientific << std::setprecision(6)
+             << tag << ": time = " << seconds << " (Grid cumulative "
+             << timerSection_ << " D) level = " << m[2] << " field = " << m[3];
+        if (gauge && timerSection_ == "action") work(gaugeActionFlops_*gaugeActionCalls_, seconds);
+        out_ << '\n';
+        if (!gauge && timerSection_ == "refresh") {
+          const double cg = refreshSolverSeconds_[std::stoi(m[3])];
+          out_ << "GRSOURCETIME: time = " << std::max(0.0, seconds-cg)
+               << " (Grid refresh excluding timed CG loop D) field = " << m[3]
+               << " cg_time = " << cg << " refresh_time = " << seconds << '\n';
+        }
+      }
+    }
+    if (text.find("][0] :") != std::string::npos)
+      gaugeSize_ = text.find("GaugeAction[1][0] :") != std::string::npos;
+    static const std::regex calls("calls +([0-9]+)");
+    if (gaugeSize_ && pendingGaugeSeconds_ >= 0.0 && std::regex_search(text,m,calls)) {
+      out_ << std::scientific << std::setprecision(6) << "GFTIME: time = " << pendingGaugeSeconds_
+           << " (Grid cumulative force D) level = 1 field = 0";
+      work(gaugeForceFlops_*std::stoll(m[1]),pendingGaugeSeconds_);
+      out_ << '\n'; pendingGaugeSeconds_ = -1.0;
+    }
+  }
+
+  void finishWarmups() {
+    if (!warmupsPrinted_) {
+      out_ << "WARMUPS COMPLETED\n";
+      warmupsPrinted_ = true;
+    }
+  }
+  void complete() {
+    if (pendingGaugeSeconds_ >= 0.0) {
+      out_ << std::scientific << std::setprecision(6) << "GFTIME: time = " << pendingGaugeSeconds_
+           << " (Grid cumulative force D) level = 1 field = 0\n";
+      pendingGaugeSeconds_ = -1.0;
+    }
+    if (measurements_ > 0) {
+      out_ << std::scientific << std::setprecision(6)
+           << "average cg iters for step= " << measuredIterationsPerStep_ / measurements_ << '\n';
+    }
+  }
+  long long totalIterations() const { return totalIterations_; }
+};
+
+// Interpret Grid trajectory records independently of stream ownership.
+class MILCTrajectoryFormatter {
+  std::ostream& output_;
+  MILCPerformanceFormatter performance_;
+  const bool pure_;
+  const size_t fermions_;
+  const double kineticOffset_;
+  std::map<int, double> fermionTerms_;
+  double gauge_ = 0.0, deltaH_ = 0.0;
+  double previousGauge_ = 0.0, previousKinetic_ = 0.0, previousFermion_ = 0.0;
+  double previousTotal_ = 0.0;
+  bool haveGauge_ = false, evaluating_ = false, haveDeltaH_ = false;
+  using Clock = std::chrono::steady_clock;
+  Clock::time_point start_ = Clock::now(), actionStart_;
+
+  void beginAction() {
+    fermionTerms_.clear();
+    haveGauge_ = false;
+    evaluating_ = true;
+    actionStart_ = Clock::now();
+  }
+
+  void action(double total) {
+    if (!evaluating_ || !haveGauge_ || fermionTerms_.size() != fermions_) {
+      output_ << "WARNING: incomplete Grid action records; ACTION summary omitted\n";
+      evaluating_ = false;
+      return;
+    }
+    double fermion = 0.0;
+    for (size_t i = 0; i < fermions_; ++i) {
+      auto term = fermionTerms_.find(i);
+      if (term == fermionTerms_.end()) {
+        output_ << "WARNING: missing pseudofermion action; ACTION summary omitted\n";
+        evaluating_ = false;
+        return;
+      }
+      fermion += term->second;
+    }
+    const double kinetic = total - gauge_ - fermion - kineticOffset_;
+    const double sum = total - kineticOffset_;
+    output_ << std::scientific << std::setprecision(14)
+            << "ACTION: g,h,f = " << gauge_ << "  " << kinetic << "  "
+            << fermion << "  " << sum << '\n';
+    output_ << std::setprecision(6)
+            << "DG = " << gauge_ - previousGauge_
+            << ", DH = " << kinetic - previousKinetic_
+            << ", DF = " << fermion - previousFermion_
+            << ", D = " << sum - previousTotal_ << '\n'
+            << "ACTIONTIME: time = "
+            << std::chrono::duration<double>(Clock::now() - actionStart_).count() << '\n';
+    previousGauge_ = gauge_;
+    previousKinetic_ = kinetic;
+    previousFermion_ = fermion;
+    previousTotal_ = sum;
+    evaluating_ = false;
+  }
+
+  void decision(const char* label) {
+    if (haveDeltaH_) {
+      output_ << std::scientific << std::setprecision(6)
+              << label << ": delta S = " << deltaH_ << '\n';
+    } else {
+      output_ << "WARNING: missing Grid dH; acceptance summary omitted\n";
+    }
+    haveDeltaH_ = false;
+    output_.flush();
+  }
+
+public:
+  MILCTrajectoryFormatter(std::ostream& output, size_t fermions, double volume,
+                          int steps = 1, int start = 0, int warmups = 0, int interval = 1, int ranks = 1,
+                          bool pure = true)
+    : output_(output), performance_(output, steps, start, warmups, interval, volume, ranks),
+      pure_(pure), fermions_(fermions), kineticOffset_(16.0 * volume) {}
+
+  // Pure output keeps real diagnostics while suppressing the original detail
+  // records. Reuse this path for an unterminated diagnostic during unwinding.
+  void detail(const std::string& text) {
+    if (!pure_) output_ << text << '\n';
+    else {
+      static const std::regex diagnostic(
+        "\\b(warning|error|fatal|failed|failure|nan|inf)\\b|not.*converg",
+        std::regex::icase);
+      if (std::regex_search(text, diagnostic)) output_ << text << '\n';
+    }
+  }
+
+  void line(const std::string& text) {
+    if (!pure_) output_ << text << '\n';
+    performance_.line(text);
+    if (text.find("Compute initial action") != std::string::npos ||
+        text.find("Compute final action") != std::string::npos) beginAction();
+    if (text.find("-- # Trajectory = ") != std::string::npos) haveDeltaH_ = false;
+
+    static const std::regex term("S \\[([0-9]+)\\]\\[([0-9]+)\\] H = ([^ ]+)");
+    std::smatch match;
+    if (evaluating_ && std::regex_search(text, match, term)) {
+      std::istringstream value(match[3].str());
+      double number;
+      if (value >> number) {
+        if (match[1] == "0") fermionTerms_[std::stoi(match[2])] = number;
+        if (match[1] == "1" && match[2] == "0") { gauge_ = number; haveGauge_ = true; }
+      }
+    }
+    const auto totalPos = text.find("Total H ");
+    if (totalPos != std::string::npos) {
+      const auto equals = text.find('=', totalPos);
+      if (equals != std::string::npos) {
+        double total;
+        std::istringstream value(text.substr(equals + 1));
+        if (value >> total) action(total);
+      }
+      const auto deltaPos = text.find("dH = ", totalPos);
+      if (deltaPos != std::string::npos) {
+        std::istringstream value(text.substr(deltaPos + 5));
+        haveDeltaH_ = bool(value >> deltaH_);
+      }
+    }
+    if (text.find("Metropolis_test -- ACCEPTED") != std::string::npos) decision("ACCEPT");
+    if (text.find("Metropolis_test -- REJECTED") != std::string::npos) decision("REJECT");
+    if (text.find("Skipping Metropolis test") != std::string::npos) decision("CHECK");
+
+    // Mixed mode forwards original Grid lines unchanged. Also emit a plain
+    // MILC measurement record when its original carries a Grid prefix.
+    static const std::regex record(
+      "(PLAQ:|P_LOOP:|G_LOOP:|GACTION:|GMES:|PBP:|FACTION:|PLAQUETTE ACTION:|LINK_UPDATE:|"
+      "hisq_svd_counter = |hisq_force_filter_counter = |"
+      "Aggregate time to (setup|do gauge measurement|do pbp measurements) )");
+    if (std::regex_search(text, match, record)) {
+      if (pure_ || match.position() != 0) output_ << text.substr(match.position()) << '\n';
+    } else if (pure_) detail(text);
+  }
+
+  void complete() {
+    performance_.finishWarmups();
+    output_ << "RUNNING COMPLETED\n";
+    performance_.complete();
+    output_ << std::scientific << std::setprecision(6)
+            << "Time = " << std::chrono::duration<double>(Clock::now() - start_).count()
+            << " seconds\n"
+            << "total_iters = " << performance_.totalIterations() << '\n';
+    output_.flush();
+  }
+};
+
+// Collect whole lines: Grid emits a record through many operator<< calls and
+// sometimes flushes before its newline. Never interpret a flush as a record.
+class MILCOutput : public std::streambuf {
+  std::streambuf* original_ = nullptr;
+  std::ostream output_;
+  std::ios::fmtflags flags_;
+  std::streamsize precision_;
+  std::ios::iostate state_;
+  int messageActive_, hmcActive_, performanceActive_, integratorActive_;
+  MILCTrajectoryFormatter formatter_;
+  std::string pending_;
+
+  void finishLine() {
+    if (pending_.find("Compute initial action") != std::string::npos ||
+        pending_.find("Compute final action") != std::string::npos)
+      std::cout.precision(std::numeric_limits<double>::max_digits10);
+    // The formatter writes to the original stream, so the buffer can be reused.
+    formatter_.line(pending_);
+    pending_.clear();
+  }
+
+protected:
+  std::streamsize xsputn(const char* data, std::streamsize size) override {
+    // std::ostream sends strings/numbers in blocks. Avoid a virtual overflow
+    // call for every byte; retain partial records across writes and flushes.
+    const std::streamsize originalSize = size;
+    while (size > 0) {
+      const char* newline = traits_type::find(data, size, '\n');
+      const std::streamsize length = newline ? newline-data : size;
+      pending_.append(data, length);
+      data += length;
+      size -= length;
+      if (newline) { finishLine(); ++data; --size; }
+    }
+    return originalSize;
+  }
+  int_type overflow(int_type ch) override {
+    if (!traits_type::eq_int_type(ch, traits_type::eof())) {
+      const char c = traits_type::to_char_type(ch);
+      if (c == '\n') finishLine();
+      else pending_ += c;
+    }
+    return traits_type::not_eof(ch);
+  }
+  int sync() override { return output_.rdbuf()->pubsync(); }
+
+public:
+  MILCOutput(bool enabled, size_t fermions, double volume,
+             int steps = 1, int start = 0, int warmups = 0, int interval = 1, int ranks = 1,
+             bool pure = true)
+    : output_(std::cout.rdbuf()), flags_(std::cout.flags()),
+      precision_(std::cout.precision()), state_(std::cout.rdstate()),
+      messageActive_(GridLogMessage.isActive()), hmcActive_(GridLogHMC.isActive()),
+      performanceActive_(GridLogPerformance.isActive()), integratorActive_(GridLogIntegrator.isActive()),
+      formatter_(output_, fermions, volume, steps, start, warmups, interval, ranks, pure) {
+    if (enabled) {
+      // Capture needs these channels even when --log requests NoMessage/NoHMC.
+      GridLogMessage.Active(1);
+      GridLogHMC.Active(1);
+      GridLogPerformance.Active(1);
+      GridLogIntegrator.Active(1);
+      std::cout.flush();
+      original_ = std::cout.rdbuf(this);
+      std::cout.precision(std::numeric_limits<double>::max_digits10);
+    }
+  }
+  MILCOutput(const MILCOutput&) = delete;
+  MILCOutput& operator=(const MILCOutput&) = delete;
+  void complete() {
+    if (original_) {
+      if (!pending_.empty()) { finishLine(); }
+      formatter_.complete();
+    }
+  }
+  ~MILCOutput() override {
+    if (original_) {
+      // Preserve a final diagnostic fragment during exception unwinding, but
+      // never claim successful completion from a destructor.
+      if (!pending_.empty()) formatter_.detail(pending_);
+      output_.flush();
+      std::cout.rdbuf(original_);
+      std::cout.flags(flags_);
+      std::cout.precision(precision_);
+      std::cout.clear(state_);
+      GridLogMessage.Active(messageActive_);
+      GridLogHMC.Active(hmcActive_);
+      GridLogPerformance.Active(performanceActive_);
+      GridLogIntegrator.Active(integratorActive_);
+    }
+  }
+};
 
 ////////////////////////////////////////////////////////////////
 // MILC's combined light/strange/regulator pseudofermion
@@ -205,6 +669,26 @@ GRID_SERIALIZABLE(
 
 #undef GRID_SERIALIZABLE
 
+// Optional: without it the gauge observables are measured every trajectory
+struct ChiralCondensateParameters: Serializable {
+  GRID_SERIALIZABLE_CLASS_MEMBERS(
+    ChiralCondensateParameters,
+    double, Mass,
+    double, NaikEpsilon,
+    double, StoppingCondition,
+    int, MaxIterations
+  );
+};
+
+struct MeasurementParameters: Serializable {
+  GRID_SERIALIZABLE_CLASS_MEMBERS(
+    MeasurementParameters,
+    int, TrajectoriesBetweenMeasurements,
+    int, ChiralCondensateSources,
+    std::vector<ChiralCondensateParameters>, ChiralCondensate
+  );
+};
+
 ////////////////////////////////////////////////////////////////
 // Input deck: the XML file, or MILC's input deck and rationals file
 ////////////////////////////////////////////////////////////////
@@ -220,6 +704,15 @@ struct FieldSpec {
   bool ActionIsNorm = false;
 };
 
+// MILC's measurements (ks_imp_rhmc control.c): after the warms, every traj_between_meas
+// trajectories, the gauge observables and then npbp_reps sources for each mass in order
+struct MeasurementSpec {
+  int Warmups = 0;
+  int Interval = 1;
+  int Sources = 1;
+  std::vector<ChiralCondensateParameters> Condensates;
+};
+
 struct Deck {
   HMCparameters HMC;
   CheckpointerParameters Checkpoint;
@@ -231,6 +724,7 @@ struct Deck {
   RealD TadpoleFactor;
   int SeaFlavors;                     // MILC's total_dyn_flavors in the one-loop coefficients
   std::vector<FieldSpec> Fields;
+  MeasurementSpec Measurements;
 };
 
 Deck readXMLDeck(const std::string& file) {
@@ -259,6 +753,15 @@ Deck readXMLDeck(const std::string& file) {
   deck.GaugeStepMultiplicity = HamiltonianMonteCarlo.GaugeActionStepMultiplicity;
   deck.BareGaugeCoupling = Action.BareGaugeCoupling;
   deck.TadpoleFactor = Action.TadpoleFactor;
+
+  // Grid's thermalization (NoMetropolisUntil) plays MILC's warms: the HMC skips it
+  MeasurementParameters Measurement;
+  Measurement.TrajectoriesBetweenMeasurements = 1;
+  Measurement.ChiralCondensateSources = 1;
+  read(Reader, "MeasurementParameters", Measurement);
+  deck.Measurements.Interval = Measurement.TrajectoriesBetweenMeasurements;
+  deck.Measurements.Sources = Measurement.ChiralCondensateSources;
+  deck.Measurements.Condensates = std::move(Measurement.ChiralCondensate);
 
   // MILC's rationals file: bounds [lambda_low, lambda_high] on -D^2 for every pseudofermion,
   // order_MD for the force and order_GR = order_FA for heatbath and action.
@@ -402,10 +905,10 @@ Deck readMILCDeck(const std::string& file) {
   deck.SeaFlavors = 0;
   for (RealD flavors : in.reals("dyn_flavors", nDyn)) { deck.SeaFlavors += flavors; }
   deck.TadpoleFactor = in.real("u0");
-  deck.HMC.Trajectories = in.integer("warms");
-  deck.HMC.Trajectories += in.integer("trajecs");
+  deck.Measurements.Warmups = in.integer("warms");  // measurements follow the warms
+  deck.HMC.Trajectories = deck.Measurements.Warmups + in.integer("trajecs");
   deck.HMC.NoMetropolisUntil = 0;                 // MILC's warms are Metropolis trajectories
-  in.integer("traj_between_meas");                  // Grid measures every trajectory
+  deck.Measurements.Interval = in.integer("traj_between_meas");
   const RealD timeStep = in.real("microcanonical_time_step");
   const int milcSteps = in.integer("steps_per_trajectory");
   GRID_ASSERT(milcSteps % 2 == 0 && "MILC 3G1F requires an even number of steps");
@@ -445,22 +948,29 @@ Deck readMILCDeck(const std::string& file) {
       0,
       0
     );
-    deck.Fields.push_back(field);
+    deck.Fields.push_back(std::move(field));
   }
 
   in.integer("prec_ff");
-  const int nPbp = in.integer("number_of_pbp_masses"); // measurement code, not run here
+  const int nPbp = in.integer("number_of_pbp_masses");
+  int maxIterations = 0;
   if (nPbp > 0) {
-    in.integer("max_cg_prop");
-    in.integer("max_cg_prop_restarts");
-    in.integer("npbp_reps");
-    in.integer("prec_pbp");
+    maxIterations = in.integer("max_cg_prop");      // per restart
+    maxIterations *= in.integer("max_cg_prop_restarts");
+    deck.Measurements.Sources = in.integer("npbp_reps");
+    in.integer("prec_pbp");                         // double precision throughout
   }
   for (int i = 0; i < nPbp; ++i) {
-    in.real("mass");
-    in.real("naik_term_epsilon");
-    in.real("error_for_propagator");
-    in.real("rel_error_for_propagator");
+    ChiralCondensateParameters condensate;
+    condensate.Mass = in.real("mass");
+    condensate.NaikEpsilon = in.real("naik_term_epsilon");
+    condensate.StoppingCondition = in.real("error_for_propagator");
+    condensate.MaxIterations = maxIterations;
+    if (in.real("rel_error_for_propagator") != 0.0) {
+      std::cout << GridLogWarning << "rel_error_for_propagator is not supported; "
+                << "pbp solves stop on error_for_propagator alone" << std::endl;
+    }
+    deck.Measurements.Condensates.push_back(condensate);
   }
 
   // Grid's checkpointer names lattices <prefix>.<trajectory>; a reloaded lattice must follow
@@ -499,17 +1009,229 @@ Deck readMILCDeck(const std::string& file) {
 }
 
 ////////////////////////////////////////////////////////////////
+// MILC measurements: g_measure, then f_meas_imp_field per pbp mass
+////////////////////////////////////////////////////////////////
+
+class MILCGaugeAction: public PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction<Gimpl> {
+  using Base = PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction<Gimpl>;
+public:
+  bool report = false;
+  const std::array<RealD, 3> coefficients;
+
+  MILCGaugeAction(GridCartesian* grid, RealD beta, RealD rectangle, RealD parallelogram)
+    : Base(grid, beta, 1.0, rectangle, parallelogram), coefficients{1.0, rectangle, parallelogram} {}
+
+  RealD S(const GaugeField& U) override {
+    if (report) std::cout << GridLogMessage << milcRecord(
+      "PLAQUETTE ACTION: %e", -6.0*context.beta*U.Grid()->gSites()*WilsonLoops<Gimpl>::avgPlaquette(U)
+    ) << std::endl;
+    return Base::S(U);
+  }
+};
+
+class MILCMeasurements : public HmcObservable<HMCWrapper::Field> {
+public:
+  typedef HMCWrapper::ImplPolicy GaugeImpl;
+  typedef GaugeImpl::Field GaugeField;
+  typedef GaugeImpl::LinkField GaugeLinkField;
+  typedef GaugeImpl::ComplexField ComplexField;
+  typedef StaggeredFermionOperator::FermionField FermionField;
+
+private:
+  const MeasurementSpec _spec;
+  const bool _milcOutput;
+  const std::array<RealD, 3> _gaugeCoefficients;
+  const int _warmupsEnd;
+  std::deque<StaggeredFermionOperator> _operators;
+  std::vector<ActionContract<GaugeField>> _contracts;
+
+public:
+  MILCMeasurements(
+    const MeasurementSpec& spec,
+    const HMCparameters& hmc,                     // after the command line
+    HISQConfiguration<GaugeImpl>& links,
+    GridCartesian* grid,
+    GridRedBlackCartesian* rbGrid,
+    const StaggeredFermionOperator::ImplParams& params,
+    bool milcOutput,
+    const std::array<RealD, 3>& gaugeCoefficients
+  ): _spec(spec), _milcOutput(milcOutput), _gaugeCoefficients(gaugeCoefficients),
+     _warmupsEnd(hmc.StartTrajectory + hmc.NoMetropolisUntil + spec.Warmups) {
+    GRID_ASSERT(spec.Interval > 0 && spec.Sources > 0);
+    for (const auto& c : spec.Condensates) {
+      GRID_ASSERT(c.MaxIterations > 0 && "pbp solves need an iteration limit");
+      // The HMC operators with the mass term 2m restored (M = 2m + D, as MILC)
+      _operators.emplace_back(
+        *grid, *rbGrid, 2.0 * c.Mass, 2.0, -(1.0 + c.NaikEpsilon) / 12.0, 1.0, params
+      );
+      _contracts.emplace_back(_operators.back().identity(), links.promise(c.NaikEpsilon));
+    }
+  }
+
+  // HMC passes the trajectory just completed (Grid counts from StartTrajectory). MILC measures
+  // after its warms at traj_done % traj_between_meas == traj_between_meas - 1, traj_done
+  // counting measuring trajectories from 0.
+  void TrajectoryComplete(
+    int traj,
+    ConfigurationBase<GaugeField>& links,
+    GridSerialRNG& sRNG,
+    GridParallelRNG& pRNG
+  ) override {
+    const int measuring = traj - _warmupsEnd;
+    if (measuring <= 0 || measuring % _spec.Interval != 0) { return; }
+    const double gaugeStart = _milcOutput ? usecond() : 0.0;
+    gauge(links.get_U(false));
+    if (_milcOutput) std::cout << GridLogMessage << milcRecord(
+      "Aggregate time to do gauge measurement %e", (usecond() - gaugeStart) * 1.0e-6
+    ) << std::endl;
+    const double pbpStart = _milcOutput ? usecond() : 0.0;
+    for (int i = 0; i < _operators.size(); ++i) {
+      _operators[i].ImportGauge(_contracts[i]);   // HISQ links smeared by the HMC
+      condensate(_spec.Condensates[i], _operators[i], pRNG);
+    }
+    if (_milcOutput) std::cout << GridLogMessage << milcRecord(
+      "Aggregate time to do pbp measurements %e", (usecond() - pbpStart) * 1.0e-6
+    ) << std::endl;
+  }
+
+  void TrajectoryComplete(int, GaugeField&, GridSerialRNG&, GridParallelRNG&) override
+  { GRID_ASSERT(0 && "MILC measurements need the HISQ configuration"); }
+
+private:
+  // g_measure, KS phases out: the space-space and space-time plaquettes, Re tr per plane
+  // (3 for unit links), and the Polyakov loop sum_x tr prod_t U_t(x, t) / (nx ny nz)
+  void gauge(const GaugeField& U) const {
+    GridBase* grid = U.Grid();
+    const RealD volume = grid->gSites();
+
+    std::vector<GaugeLinkField> link(Nd, GaugeLinkField(grid));
+    for (int mu = 0; mu < Nd; ++mu) { link[mu] = PeekIndex<LorentzIndex>(U, mu); }
+
+    ComplexField plaquette(grid);
+    RealD spatial = 0.0, temporal = 0.0;
+    for (int mu = 1; mu < Nd; ++mu) {
+      for (int nu = 0; nu < mu; ++nu) {
+        WilsonLoops<GaugeImpl>::traceDirPlaquette(plaquette, link, mu, nu);
+        (mu == Tdir ? temporal : spatial) += real(TensorRemove(sum(plaquette)));
+    } }
+
+    // Every time slice repeats the spatial sum, so the 4D sum over volume is MILC's average
+    GaugeLinkField loop = link[Tdir];
+    for (int t = 1; t < grid->GlobalDimensions()[Tdir]; ++t) {
+      loop = GaugeImpl::CovShiftForward(link[Tdir], Tdir, loop);
+    }
+    const ComplexD polyakov = TensorRemove(sum(trace(loop))) / volume;
+
+    std::cout << GridLogMessage << milcRecord(
+      "PLAQ:\t%.16f\t%.16f", spatial / (3.0 * volume), temporal / (3.0 * volume)
+    ) << std::endl;
+    std::cout << GridLogMessage << milcRecord(
+      "P_LOOP:\t%e\t%e", polyakov.real(), polyakov.imag()
+    ) << std::endl;
+    if (!_milcOutput) return;
+
+    // MILC's Symanzik loop table: six plaquettes, twelve rectangles, sixteen parallelograms.
+    // Its backward direction is 7-mu; links here have no staggered or boundary phases.
+    double action = 0.0;
+    GaugeLinkField product(grid);
+    auto measure = [&](int family, int index, std::initializer_list<int> path) {
+      product = 1.0;
+      for (auto step = std::rbegin(path); step != std::rend(path); ++step) {
+        const int dir = *step, mu = dir < Nd ? dir : 7-dir;
+        if (dir < Nd) product = GaugeImpl::CovShiftForward(link[mu], mu, product);
+        else product = GaugeImpl::CovShiftBackward(link[mu], mu, product);
+      }
+      const double average = real(TensorRemove(sum(trace(product)))) / volume;
+      action += _gaugeCoefficients[family]*(3.0-average);
+      std::string record = milcRecord("G_LOOP:  %d  %d  %d   \t%.16e\t( ", family, index, int(path.size()), average);
+      for (int dir : path) record += std::to_string(dir) + " ";
+      std::cout << GridLogMessage << record << " )" << std::endl;
+    };
+    int index = 0;
+    for (int mu = 0; mu < Nd; ++mu) for (int nu = mu+1; nu < Nd; ++nu)
+      measure(0, index++, {mu, nu, 7-mu, 7-nu});
+    index = 0;
+    for (int mu = 0; mu < Nd; ++mu) for (int nu = 0; nu < Nd; ++nu) if (nu != mu)
+      measure(1, index++, {mu, mu, nu, 7-mu, 7-mu, 7-nu});
+    index = 0;
+    for (int mu = 0; mu < Nd; ++mu) for (int nu = mu+1; nu < Nd; ++nu)
+      for (int rho = nu+1; rho < Nd; ++rho) for (int b = 0; b < 2; ++b) for (int c = 0; c < 2; ++c) {
+        const int v = b ? 7-nu : nu, w = c ? 7-rho : rho;
+        measure(2, index++, {mu, v, w, 7-mu, 7-v, 7-w});
+      }
+    std::cout << GridLogMessage << milcRecord("GACTION: %e", action) << std::endl;
+  }
+
+  // f_meas_imp_field: per source eta on all sites (grsource_plain_field, drawn as the HMC
+  // heatbath draws), pbp = (2/V) eta^dag M^-1 eta on even and odd sites separately and
+  // FACTION = (1/V) Re (M^dag eta)^dag M^-1 eta on even sites
+  void condensate(
+    const ChiralCondensateParameters& c,
+    StaggeredFermionOperator& op,
+    GridParallelRNG& pRNG
+  ) const {
+    GridBase* grid = op.FermionGrid();
+    GridBase* rbGrid = op.FermionRedBlackGrid();
+    const RealD volume = grid->gSites();
+
+    FermionField source(grid), image(grid), solution(grid);
+    FermionField left(rbGrid), right(rbGrid);
+    ConjugateGradient<FermionField> CG(c.StoppingCondition, c.MaxIterations, false);
+    SchurRedBlackStaggeredSolve<FermionField> solve(CG);
+
+    for (int rep = 0; rep < _spec.Sources; ++rep) {
+      gaussian(pRNG, source);
+      source *= std::sqrt(0.5);                   // MILC's exp(-x^2) per component
+      op.Mdag(source, image);                     // M^dag eta = 2m eta - D eta
+      solution = Zero();
+      solve(op, source, solution);
+
+      pickCheckerboard(Even, left, source);
+      pickCheckerboard(Even, right, solution);
+      const ComplexD even = innerProduct(left, right);
+      pickCheckerboard(Even, left, image);
+      const RealD action = real(innerProduct(left, right));
+      pickCheckerboard(Odd, left, source);
+      pickCheckerboard(Odd, right, solution);
+      const ComplexD odd = innerProduct(left, right);
+
+      std::cout << GridLogMessage << milcRecord(
+        "PBP: mass %e     %e  %e  %e  %e ( %d of %d )", c.Mass,
+        2.0 * even.real() / volume, 2.0 * odd.real() / volume,
+        2.0 * even.imag() / volume, 2.0 * odd.imag() / volume,
+        rep + 1, _spec.Sources
+      ) << std::endl;
+      std::cout << GridLogMessage << milcRecord(
+        "FACTION: mass = %e,  %e ( %d of %d )", c.Mass, action / volume, rep + 1, _spec.Sources
+      ) << std::endl;
+    }
+  }
+};
+
+// AddObservable takes an HMC module owning the observable
+class MILCMeasurementModule : public HMCModuleBase<HmcObservable<HMCWrapper::Field>> {
+  MILCMeasurements _measurements;
+
+public:
+  template <class... Args>
+  explicit MILCMeasurementModule(Args&&... args): _measurements(std::forward<Args>(args)...) {}
+
+  HmcObservable<HMCWrapper::Field>* getPtr() override { return &_measurements; }
+};
+
+////////////////////////////////////////////////////////////////
 // Main
 ////////////////////////////////////////////////////////////////
 
 int main(int argc, char **argv) {
+  const double setupStart = usecond();
   Grid_init(&argc, &argv);
 
   ////////////////////////////////////////////////////////////////
-  // Input: --xml <file>, or --milc <deck> with MILC's input deck and rationals file
+  // Input: --xml <file>, or --milc-input <deck> with MILC's input deck and rationals file
   ////////////////////////////////////////////////////////////////
-  const bool milc = GridCmdOptionExists(argv, argv + argc, "--milc");
-  Deck deck = milc ? readMILCDeck(GridCmdOptionPayload(argv, argv + argc, "--milc"))
+  const bool milc = GridCmdOptionExists(argv, argv + argc, "--milc-input");
+  Deck deck = milc ? readMILCDeck(GridCmdOptionPayload(argv, argv + argc, "--milc-input"))
                    : readXMLDeck(GridCmdOptionPayload(argv, argv + argc, "--xml"));
 
   /////////////////////////////////////////////////////////////////
@@ -559,10 +1281,9 @@ int main(int argc, char **argv) {
   // Eq. A2, beta = 10/g^2. Tadpole improvement is gauge-only.
   const RealD u0 = deck.TadpoleFactor;
   const int nf = deck.SeaFlavors;
-  PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction<Gimpl> GaugeAction(
-    GridPtr, 
-    deck.BareGaugeCoupling, 
-    1.0, 
+  MILCGaugeAction GaugeAction(
+    GridPtr,
+    deck.BareGaugeCoupling,
     oneLoopMILCRectangleCoefficient(u0, nf), 
     oneLoopMILCParallelogramCoefficient(u0, nf)
   );
@@ -574,17 +1295,74 @@ int main(int argc, char **argv) {
   //////////////////////////////////////////////////////////////
   // Run HMC with HISQ smearing
   //////////////////////////////////////////////////////////////
+  const bool milcOutputMixed = GridCmdOptionExists(argv, argv + argc, "--milc-output-mixed");
+  const bool milcOutput = milcOutputMixed || GridCmdOptionExists(argv, argv + argc, "--milc-output");
+  
+  MILCGaugeImpl::report = milcOutput;
+  GaugeAction.report = milcOutput;
+  const bool gaugePerformance = milcOutput || GridLogPerformance.isActive();
+  Policy.setPerformanceReporting(gaugePerformance);
+  
   TheHMC.Resources.AddObservable<PlaqObs>();
-  TheHMC.Run(Policy, [](auto& md) {
-    for (int level = 0; level < md.levels; ++level)
-      md.schemes[level] = omelyan2(md.T, md.V[level], md.as[level].multiplier, 0.2);
-    md.evolution.set_branches({&md.schemes[0], &md.schemes[1]});
-  });
+  TheHMC.Resources.AddObservable<MILCMeasurementModule>(
+    deck.Measurements, TheHMC.Parameters, Policy, GridPtr, GridRBPtr, Params, milcOutput, GaugeAction.coefficients
+  );
+
+  {
+    // Only redirect the printing rank: rdbuf() clears Grid's MPI quiet state.
+    MILCOutput output(
+      milcOutput && GridPtr->IsBoss(), 
+      Fields.size(), 
+      GridPtr->gSites(),
+      TheHMC.Parameters.MD.MDsteps * (milc ? 2 : 1),
+      TheHMC.Parameters.StartTrajectory,
+      TheHMC.Parameters.NoMetropolisUntil + deck.Measurements.Warmups,
+      deck.Measurements.Interval, 
+      GridPtr->ProcessorCount(), 
+      !milcOutputMixed
+    );
+    
+    TheHMC.Run(Policy, [&](auto& md) {
+      for (int level = 0; level < md.levels; ++level)
+      { md.schemes[level] = omelyan2(md.T, md.V[level], md.as[level].multiplier, 0.2); }
+      md.evolution.set_branches({&md.schemes[0], &md.schemes[1]});
+      
+      if (gaugePerformance) {
+        double actionWork = double(GaugeAction.grid->lSites())*
+          GaugeAction.actionFlopsPerSite(GaugeAction.context) + 2*(GridPtr->lSites()-1) + 1;
+        
+        if (milcOutput) { // S also evaluates the opt-in PLAQUETTE ACTION diagnostic on the tight grid
+          using M = MatrixMath::DenseMatrixFlopModel<Nc>;
+          actionWork += double(GridPtr->lSites())*(Nd*(Nd-1)/2)*(3*M::multiply + M::trace + 2)
+            + 2*(GridPtr->lSites()-1) + 4;
+        }
+        
+        const double forceWork = double(GaugeAction.grid->lSites())
+          *GaugeAction.forceFlopsPerSite(GaugeAction.context);
+        
+        std::cout << GridLogPerformance << milcRecord(
+          "GaugeWorkModel: action = %.17e force = %.17e", actionWork, forceWork
+        ) << std::endl;
+      }
+      
+      if (milcOutput) std::cout << GridLogMessage << milcRecord(
+        "Aggregate time to setup %e", (usecond() - setupStart) * 1.0e-6
+      ) << std::endl;
+    });
+
+    if (gaugePerformance) {
+      auto report = UnitaryProjectionReport::read(false); // one read at run end, no per-stage transfers
+      GridPtr->GlobalSum(report.svd); GridPtr->GlobalSum(report.filter);
+      std::cout << GridLogMessage << "hisq_svd_counter = " << report.svd << std::endl;
+      std::cout << GridLogMessage << "hisq_force_filter_counter = " << report.filter << std::endl;
+    }
+    output.complete();
+  }
 
   Grid_finalize();
 }
 
-/* MILC input (pass as --milc <deck>, with --grid equal to nx ny nz nt): the ks_imp_rhmc deck
+/* MILC input (pass as --milc-input <deck>, with --grid equal to nx ny nz nt): the ks_imp_rhmc deck
    of su3_rhmc_hisq (ks_imp_rhmc/test/su3_rhmc_hisq.f211.1.sample-in) and the rationals file it
    names in load_rhmc_params. Each pseudofermion uses the massless operator with the
    naik_term_epsilon of the file; GR is the heatbath, MD the force, and FA the
@@ -600,8 +1378,13 @@ int main(int argc, char **argv) {
    containing ildg or scidac, MILC's native format cannot be read); save_* writes Grid's
    checkpoints every trajectory under the given name, less any .<trajectory> ending, forget
    writes nothing. One checkpointer both reads and writes, so a continuation keeps its prefix
-   (reload_serial lat.100, save_serial lat.110). traj_between_meas, cgprec_md_fa_gr,
-   prec_ff and the pbp block are read and ignored; continue is not supported.
+   (reload_serial lat.100, save_serial lat.110). After the warms, every traj_between_meas
+   trajectories print PLAQ and P_LOOP and, for each pbp mass in order, npbp_reps Gaussian
+   sources on all sites give PBP and FACTION, drawn from the parallel rng after the trajectory
+   as in MILC; each mass solves 2m + D on its naik_term_epsilon links to error_for_propagator
+   in at most max_cg_prop * max_cg_prop_restarts iterations (a nonzero
+   rel_error_for_propagator is ignored with a warning). cgprec_md_fa_gr, prec_ff and prec_pbp
+   are read and ignored (double precision throughout); continue is not supported.
 */
 
 /* Example XML input file (pass as --xml <xml-file-name>.xml):
@@ -613,7 +1396,9 @@ int main(int argc, char **argv) {
    combined field approximates each of its three factors separately at the given degree
    (3 x degree poles); its light factor x^(2/4) on [4 m_l^2, 90] reaches 1e-9 at degree 20
    with 80 digits. With --enable-rng=milc the parallel rng takes one seed and the serial rng
-   {seed, volume} (4096 below is 8^4).
+   {seed, volume} (4096 below is 8^4). MeasurementParameters is optional (the gauge
+   observables every trajectory, no condensate): measurements begin after the
+   NoMetropolisUntil trajectories, and each ChiralCondensate elem is one MILC pbp mass.
 <?xml version="1.0"?>
 <grid>
   <InitializationParameters>
@@ -660,5 +1445,17 @@ int main(int argc, char **argv) {
     <CharmActionDegree>9</CharmActionDegree>
     <CharmForceDegree>7</CharmForceDegree>
   </RationalApproximationParameters>
+  <MeasurementParameters>
+    <TrajectoriesBetweenMeasurements>1</TrajectoriesBetweenMeasurements>
+    <ChiralCondensateSources>1</ChiralCondensateSources>
+    <ChiralCondensate>
+      <elem>
+        <Mass>0.00184</Mass>
+        <NaikEpsilon>0.0</NaikEpsilon>
+        <StoppingCondition>1e-8</StoppingCondition>
+        <MaxIterations>10000</MaxIterations>
+      </elem>
+    </ChiralCondensate>
+  </MeasurementParameters>
 </grid>
 */

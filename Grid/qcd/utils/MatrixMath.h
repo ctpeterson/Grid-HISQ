@@ -730,6 +730,33 @@ accelerator_inline Realified<T> polarDerivCayleyHamilton(
 #undef FOR_LANES
 #undef MATRIX_MATH_UNARY
 #undef MATRIX_MATH_BINARY
+
+// Complex multiply/add = 6/2 real operations.
+// Special functions count as one; copies, signs, masks and communication are excluded.
+template <int N>
+struct DenseMatrixFlopModel {
+  static constexpr uint64_t multiply = N*N*(8*N - 2);
+  static constexpr uint64_t add = 2*N*N;
+  static constexpr uint64_t scale = 2*N*N;
+  static constexpr uint64_t inner = 8*N*N;
+  static constexpr uint64_t trace = 2*(N - 1);
+  static constexpr uint64_t adjugate = N == 3 ? 14*N*N : 0;
+  static constexpr uint64_t determinant = 8*N;
+  static constexpr uint64_t hermEigs = N == 3 ? 283 : 55;
+  static constexpr uint64_t hermSqrt = N == 3 ? 310 : 28;
+  static constexpr uint64_t hermInvSqrt = N == 3 ? 322 : 32;
+  static constexpr uint64_t sylvester = N == 3 ? 1932 : 158;
+  static constexpr uint64_t checkEigs = adjugate + determinant + 6 + N + 2;
+  static constexpr uint64_t isPolar = 2*multiply + 3*add + scale + 3*inner
+    + 3 + adjugate + determinant;
+  static constexpr uint64_t polar = 3 + scale + multiply + hermEigs
+    + checkEigs + hermInvSqrt + multiply + isPolar;
+  static constexpr uint64_t polarDerivCayleyHamilton = 3 + scale + multiply + 3*N + scale + add
+    + hermSqrt + adjugate + determinant + scale
+    + 5*multiply + add + sylvester + add + scale;
+  static constexpr uint64_t polarDeriv = 3*multiply + 2*add + scale + sylvester;
+};
+
 }
 
 NAMESPACE_END(Grid);

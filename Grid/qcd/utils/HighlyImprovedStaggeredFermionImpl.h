@@ -66,7 +66,6 @@ directory
 
 #include <Grid/qcd/utils/Transporter.h>
 #include <Grid/qcd/utils/UnitaryProjection.h>
-#include <Grid/qcd/action/ActionParams.h>
 
 #include <Grid/perfmon/Tracing.h>
 
@@ -265,16 +264,11 @@ class HighlyImprovedStaggeredFermionImpl: Gimpl {
 public: INHERIT_GIMPL_TYPES(Gimpl);
 
 private:
-  typedef typename Simd::scalar_type GridScalar;
   typedef typename std::vector<GaugeLinkField> GaugeLorentzField;
-  typedef typename std::vector<ComplexField> StaggeredPhases;
   using Transporter = PeriodicBC::Transporter<Gimpl>;
 
 public:
   GridCartesian* ugrid;
-
-  StaggeredImplParams params;
-  StaggeredPhases stagPhases;
 
 private:
   int _depth = -1;
@@ -282,80 +276,15 @@ private:
   int _cached = false;
   PeriodicBC::TransporterStencil _stencil;
 
-private:
-  void init(GridCartesian* grid, bool calculateStaggeredPhases) {
-    assert(Nc == 3 && "HISQ only suppored for SU(3)");
-    assert(Nd == 4 && "HISQ only supported for 4 dimensions");
-    this->ugrid = grid;
-    if (calculateStaggeredPhases) calcStagPhases(stagPhases);
-  }
-
 public:
-  HighlyImprovedStaggeredFermionImpl(
-    GridCartesian* grid, 
-    const StaggeredImplParams params,
-    bool calculateStaggeredPhases = true
-  ): stagPhases(Nd, grid), params(params)
-  { init(grid, calculateStaggeredPhases); }
-
-  HighlyImprovedStaggeredFermionImpl(
-    GridCartesian* grid,
-    bool calculateStaggeredPhases = true
-  ): stagPhases(Nd, grid), params(StaggeredImplParams({1, 1, 1, -1}))
-  { init(grid, calculateStaggeredPhases); }
+  HighlyImprovedStaggeredFermionImpl(GridCartesian* grid): ugrid(grid) {
+    assert(Nc == 3 && "HISQ only supported for SU(3)");
+    assert(Nd == 4 && "HISQ only supported for 4 dimensions");
+  }
 
   // prevent duplicate ownership of PaddedCell grids
   HighlyImprovedStaggeredFermionImpl(const HighlyImprovedStaggeredFermionImpl&) = delete;
   HighlyImprovedStaggeredFermionImpl& operator=(const HighlyImprovedStaggeredFermionImpl&) = delete;
-
-private:
-  void calcStagPhases(StaggeredPhases& phases) {
-    /**
-     * @brief HISQ gauge configuration constructor
-     * @author Curtis Taylor Peterson, Peter Boyle
-     * @details
-     * Staggered phi follow the "MILC convention", which treats the fourth 
-     * direction as the "time" coordinate:
-     * (2a) eta_0 = (-1)^{x3}       <---| 
-     * (2b) eta_1 = (-1)^{x3+x0}        | convention in
-     * (2c) eta_2 = (-1)^{x3+x0+x1}     | this code
-     * (2d) eta_3 = 1               <---|
-     * Though awkard, this convention follows that of most texts on
-     * relativity. This is opposed to the convention that one often finds in 
-     * lattice gauge theory textbooks, where the "time" direction is x0:
-     * (3a) eta_0 = 1
-     * (3b) eta_1 = (-1)^{x0}
-     * (3c) eta_2 = (-1)^{x0+x1}
-     * (3d) eta_3 = (-1)^{x0+x1+x2}
-     * Boundary conditions are imposed by "rephasing" the links 
-     * on the boundary, with "1" for periodic and "-1" for anti-periodic.
-     */
-    GridBase *grid = phases[0].Grid();
-    Lattice<iScalar<vInteger>> x(grid), y(grid), t(grid);
-    Lattice<iScalar<vInteger>> tx(grid), txy(grid), xyzt(grid), coor(grid);
-    ComplexField phi(grid);
-
-    LatticeCoordinate(x, 0);
-    LatticeCoordinate(y, 1);
-    LatticeCoordinate(t, 3);
-    tx = t + x;
-    txy = tx + y;
-
-    for (int mu = 0; mu < Nd; mu++) { 
-      // for boundary phi
-      int N = grid->GlobalDimensions()[mu] - 1;
-      auto bpha = params.boundary_phases[mu];
-      GridScalar dirichlet(real(bpha), imag(bpha));
-
-      // staggered phases x boundary phases
-      LatticeCoordinate(coor, mu);
-      phi = 1.0;
-      if (mu == 0) { phi = where(mod(t, 2) == (Integer)0,   phi, -phi); }
-      if (mu == 1) { phi = where(mod(tx, 2) == (Integer)0,  phi, -phi); }
-      if (mu == 2) { phi = where(mod(txy, 2) == (Integer)0, phi, -phi); }
-      phases[mu] = where(coor == (Integer)N, dirichlet*phi, phi);
-    }
-  }
 
 private:
   // wrap PokeIndex (insert gauge link field into gauge field layout)
@@ -374,10 +303,44 @@ private:
   inline const GaugeField toGauge(GaugeLorentzField& u) 
   { GaugeField U(u[0].Grid()); HISQLOOP0(intoGauge(U, u[mu], mu)) return U; }
 
-public:
-  /** @brief rephases gauge links with staggered and Dirichlet boundary phases */
-  void rephase(GaugeField& X, const GaugeField& W) 
-  { for (int mu = 0; mu < Nd; ++mu) intoGauge(X, stagPhases[mu]*toLink(W, mu), mu); }
+public: // these should change with any changes in implementation
+  static uint64_t smearFlopsPerSite(const HISFContext& ctx) {
+    constexpr uint64_t multiply = Nc*Nc*(8*Nc-2), add = 2*Nc*Nc, scale = 2*Nc*Nc;
+    uint64_t f = Nd*scale;
+
+    for (int mu = 0; mu < Nd; ++mu) for (int nu = 0; nu < Nd; ++nu) if (nu != mu) {
+      f += Transporter::stapleFlopsPerSite() + scale + add;
+      if (ctx.lepage != 0.0) f += Transporter::stapleFlopsPerSite() + scale + add;
+      for (int i = 0; i < Nd; ++i) if (i != mu && i != nu) {
+        f += Transporter::stapleFlopsPerSite() + scale + add;
+        for (int j = 0; j < Nd; ++j) if (j != mu && j != nu && j != i)
+        { f += Transporter::stapleFlopsPerSite() + scale + add; }
+    } }
+    
+    if (ctx.naik != 0.0) f += Nd*(2*multiply + scale);
+    
+    return f;
+  }
+
+  static uint64_t derivativeFlopsPerSite(const HISFContext& ctx) {
+    constexpr uint64_t multiply = Nc*Nc*(8*Nc-2), add = 2*Nc*Nc, scale = 2*Nc*Nc;
+    uint64_t f = Nd*scale;
+    
+    for (int mu = 0; mu < Nd; ++mu) {
+      f += (Nd-1)*Transporter::stapleFlopsPerSite();
+      for (int nu = 0; nu < Nd; ++nu) if (nu != mu) {
+        f += (Nd-2)*(Nd-3)*Transporter::addStapleFlopsPerSite() + Transporter::stapleDerivativeFlopsPerSite();
+        if (ctx.lepage != 0.0) f += 2*(scale + add);
+        f += 2*scale + add;
+        f += (Nd-2)*(Nd-3)*Transporter::stapleDerivativeFlopsPerSite();
+        f += scale + add + Transporter::stapleDerivativeFlopsPerSite();
+    } }
+    
+    if (ctx.naik != 0.0) f += Nd*(5*multiply + 2*scale + 3*add);
+    
+    return f;
+  }
+
 
 //
 // HISQ smearing & unitary projection
@@ -722,6 +685,7 @@ public:
 //
 
 public:
+  // U, V and W include staggered/boundary phases; ctx contains raw MILC coefficients.
   void milcSmearDerivative(
     GaugeField& UdSdU,
     const std::vector<GaugeField>& dSdX,

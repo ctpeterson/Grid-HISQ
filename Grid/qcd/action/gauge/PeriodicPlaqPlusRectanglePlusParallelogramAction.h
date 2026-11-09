@@ -197,6 +197,47 @@ public:
     return U; 
   }
 
+public: // these should adapt to any changes in the implementation
+  static uint64_t actionFlopsPerSite(const OneLoopGaugeActionContext& ctx) {
+    constexpr uint64_t multiply = Nc*Nc*(8*Nc-2), add = 2*Nc*Nc;
+    constexpr uint64_t inner = 8*Nc*Nc;
+    uint64_t f = 0;
+    const bool improved = ctx.cr != 0.0 || ctx.cpg != 0.0;
+    
+    if (improved) f += Nd*(Nd-1)/2*6*multiply;
+    for (int mu = 1; mu < Nd; ++mu) for (int nu = 0; nu < mu; ++nu) {
+      if (!improved) f += 2*multiply + inner + 6;
+      else {
+        if (ctx.cp != 0.0 || ctx.cr != 0.0) f += 3*inner + 14;
+        if (ctx.cpg != 0.0) {
+          const int pairs = (Nd-2) + (Nd-1-mu);
+          f += pairs*(multiply + add) + multiply + inner + 6;
+    } } }
+    
+    return f;
+  }
+
+  static uint64_t forceFlopsPerSite(const OneLoopGaugeActionContext& ctx) {
+    constexpr uint64_t multiply = Nc*Nc*(8*Nc-2), add = 2*Nc*Nc, scale = 2*Nc*Nc;
+    constexpr uint64_t ta = add + scale + 2*(Nc-1) + 2 + 2*Nc;
+    uint64_t f = Nd*(multiply + ta);
+    const bool improved = ctx.cr != 0.0 || ctx.cpg != 0.0;
+    
+    if (improved) f += Nd*(Nd-1)/2*6*multiply;
+    if (ctx.cp != 0.0) 
+    { f += Nd*(Nd-1)*(improved ? 2*add + scale : PeriodicBC::Transporter<Gimpl>::addStapleFlopsPerSite()); }
+    if (ctx.cr != 0.0) { f += Nd*(Nd-1)*(7*multiply + 5*add + 2*scale); }
+    if (ctx.cpg != 0.0) {
+      for (int mu = 0; mu < Nd; ++mu) for (int nu = 0; nu < Nd-1; ++nu) {
+        const int nro = Nd-nu-1-(mu>nu);
+        if (nu == mu || nro == 0) continue;
+        const int pairs = 2*nro;
+        f += pairs*4*(multiply + add) + 4*multiply + 4*add + scale;
+    } }
+    
+    return f;
+  }
+
 public:
   RealD S(const GaugeField &U, const OneLoopGaugeActionContext ctx) {
     /**

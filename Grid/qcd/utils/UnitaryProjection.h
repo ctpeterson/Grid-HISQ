@@ -228,6 +228,20 @@ public:
   { GRID_ASSERT((Nc == 2 || Nc == 3) && "unitary projection only supported for Nc = 2 and Nc = 3 for now"); }
 
 public:
+  // Analytic work only; SVD fallback counts are reported separately.
+  static uint64_t projectionFlopsPerLink(const UnitaryProjectionContext& ctx) {
+    using M = MatrixMath::DenseMatrixFlopModel<Nc>;
+    return ctx.projectionMethod == CayleyHamiltonProjection ? M::polar : 0;
+  }
+
+  static uint64_t derivativeFlopsPerLink(const UnitaryProjectionContext& ctx) {
+    using M = MatrixMath::DenseMatrixFlopModel<Nc>;
+    if (ctx.svdOnlyDerivative) return 0;
+    if (ctx.derivativeMethod == SylvesterDerivative) return M::polarDeriv;
+    return M::multiply + M::hermEigs + M::polarDerivCayleyHamilton + (ctx.backupSVD
+      ? M::checkEigs + (ctx.derivativeEigenvalueCutoff > 0.0 ? 4 : 0) : 0);
+  }
+
   template <class Field>
   void project(Field& y, const Field& x) {
     /**
