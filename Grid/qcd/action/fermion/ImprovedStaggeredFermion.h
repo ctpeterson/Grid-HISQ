@@ -87,9 +87,18 @@ public:
   // New opt-in derivative interface
   ///////////////////////////////////
   void DhopDeriv(PrimalCotangentPairs<GaugeField>&, const FermionField&, const FermionField&, int);
+  void DhopDeriv(PrimalCotangentPairs<GaugeField>&, const std::vector<FermionField>&, const std::vector<FermionField>&, const std::vector<RealD>&, int);
   void DhopDerivOE(PrimalCotangentPairs<GaugeField>&, const FermionField&, const FermionField&, int);
   void DhopDerivEO(PrimalCotangentPairs<GaugeField>&, const FermionField&, const FermionField&, int);
   void DerivInternal(StencilImpl&, PrimalCotangentPairs<GaugeField>&, const DoubledGaugeField&, const DoubledGaugeField&, const FermionField&, const FermionField&, int);
+  void DerivInternal(StencilImpl&, PrimalCotangentPairs<GaugeField>&, const DoubledGaugeField&, const DoubledGaugeField&, const std::vector<const FermionField*>&, const std::vector<const FermionField*>&, const std::vector<RealD>&, int);
+
+private:
+  // stages of the opt-in DerivInternal: per-bilinear outer products, then field-independent work
+  void DerivAccumulate(StencilImpl&, const GaugeField&, const DoubledGaugeField&, const FermionField&, const FermionField&, RealD, std::vector<GaugeLinkField>&, std::vector<GaugeLinkField>&);
+  void DerivFinalize(PrimalCotangentPairs<GaugeField>&, const std::vector<GaugeLinkField>&, const std::vector<GaugeLinkField>&, int);
+
+public:
 
   ///////////////////////////////////////////////////////////////
   // non-hermitian hopping term; half cb or both

@@ -89,6 +89,11 @@ public:
   virtual void DhopDerivEO(GaugeField &mat,const FermionField &U,const FermionField &V,int dag)=0;
   virtual void DhopDerivOE(GaugeField &mat,const FermionField &U,const FermionField &V,int dag)=0;
 
+  // weighted sums sum_i weights[i] U[i]^dag M V[i]; default sums the routines above
+  virtual void MDeriv   (GaugeField &mat,const std::vector<FermionField> &U,const std::vector<FermionField> &V,const std::vector<RealD> &weights,int dag){DhopDeriv(mat,U,V,weights,dag);};
+  virtual void DhopDeriv(GaugeField &mat,const std::vector<FermionField> &U,const std::vector<FermionField> &V,const std::vector<RealD> &weights,int dag)
+  { _weightedDhopDeriv(mat, ActionContract<GaugeField>(identity(), {}), U, V, weights, dag); };
+
   virtual void  Mdiag  (const FermionField &in, FermionField &out) { Mooee(in,out);};   // Same as Mooee applied to both CB's
   virtual void  Mdir   (const FermionField &in, FermionField &out,int dir,int disp)=0;   // case by case Wilson, Clover, Cayley, ContFrac, PartFrac
   virtual void  MdirAll(const FermionField &in, std::vector<FermionField> &out)=0;   // case by case Wilson, Clover, Cayley, ContFrac, PartFrac
@@ -223,6 +228,27 @@ public:
     int
   ) { GRID_ASSERT(0 && "link interface DhopDeriv not implemented"); }
 
+  /**
+   * @brief Writes complete Wirtinger derivatives of weighted sums of hopping terms
+   * @details
+   * Calculates the Wirtinger derivative(s) of
+   * sum_i weights[i] left[i]^dag Dhop right[i],
+   * with ports and dag as in the single-bilinear DhopDeriv. This default sums
+   * single-bilinear derivatives; operators whose derivatives share field-independent
+   * work across bilinears can override it to perform that work once per sum.
+   */
+  virtual void DhopDeriv(
+    PrimalCotangentPairs<GaugeField>& derivatives,
+    const std::vector<FermionField>& left,
+    const std::vector<FermionField>& right,
+    const std::vector<RealD>& weights,
+    int dag
+  ) {
+    Primals<GaugeField> ports;
+    for (const auto& pair : derivatives) { ports.push_back(pair.primal()); }
+    _weightedDhopDeriv(derivatives, ActionContract<GaugeField>(identity(), ports), left, right, weights, dag);
+  }
+
   /** @brief Writes raw hopping derivatives for the even-to-odd block */
   virtual void DhopDerivOE(
     PrimalCotangentPairs<GaugeField>&,
@@ -246,6 +272,15 @@ public:
     const FermionField& left,
     int dag
   ) { DhopDeriv(derivatives, right, left, dag); }
+
+  /** @brief Defaults to weighted-sum DhopDeriv; override for additional operator dependence */
+  virtual void MDeriv(
+    PrimalCotangentPairs<GaugeField>& derivatives,
+    const std::vector<FermionField>& left,
+    const std::vector<FermionField>& right,
+    const std::vector<RealD>& weights,
+    int dag
+  ) { DhopDeriv(derivatives, left, right, weights, dag); }
 
   /** @brief Defaults to DhopDerivOE; override for a different off-diagonal block */
   virtual void MoeDeriv(
@@ -278,6 +313,31 @@ public:
     const FermionField&,
     int
   ) { GRID_ASSERT(0 && "link interface MeeDeriv not implemented"); }
+
+private:
+  /**
+   * @brief Default weighted sum of single-bilinear hopping derivatives
+   * @details
+   * Shared by the legacy and opt-in weighted-sum DhopDeriv overloads. The contract
+   * supplies the ports of opt-in derivatives and is not used by legacy derivatives.
+   */
+  template <class Derivative>
+  void _weightedDhopDeriv(
+    Derivative& derivatives,
+    const ActionContract<GaugeField>& contract,
+    const std::vector<FermionField>& left,
+    const std::vector<FermionField>& right,
+    const std::vector<RealD>& weights,
+    int dag
+  ) {
+    GRID_ASSERT(left.size() == right.size() && left.size() == weights.size());
+
+    derivatives = Zero();
+    for (std::size_t i = 0; i < left.size(); ++i) {
+      auto term = [&](auto& out) { DhopDeriv(out, left[i], right[i], dag); };
+      accumulate(derivatives, contract, weights[i], term);
+    }
+  }
 
 };
 

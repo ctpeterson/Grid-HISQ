@@ -146,9 +146,9 @@ private:
 
 private:
   GaugeField* U; 
-  GaugeField  V;
-  GaugeField  W;
-  GaugeField  X;
+  mutable GaugeField V; // <-+- smeared links: filled on demand (see _ensureSmeared)
+  mutable GaugeField W; //   |
+  mutable GaugeField X; // <-+
 
 public:
   /** @brief constructor for opt-in interface */
@@ -167,8 +167,32 @@ public:
   HISQConfiguration& operator=(const HISQConfiguration&) = delete;
 
 private:
-  void _validateReadiness() const 
-  { GRID_ASSERT(this->_state == ConfigurationState::Ready); GRID_ASSERT(U != NULL); }
+  void _validateLinks() const { // thin links: set_Field has been called
+    GRID_ASSERT(this->_state != ConfigurationState::NotReady && "HISQ links not prepared; call set_Field");
+    GRID_ASSERT(U != NULL);
+  }
+
+  void _ensureSmeared() const { // smeared links: smear only if set_Field has invalidated them
+    _validateLinks();
+    if (this->_state == ConfigurationState::Stale) { _smear(); }
+  }
+
+  void _smear() const {
+    GRID_ASSERT(!_epsilons.empty() && "no HISQ context registered");
+
+    double begin = usecond();
+    
+    _hisf.smear(V, *U, _ctx.fat7());
+    _hisf.project(W, V, _ctx.proj());
+    _hisf.smear(X, W, _ctx.asqtad());
+
+    auto& out = std::cout << GridLogMessage;
+    out << "Smearing in " << (usecond() - begin) << " ms";
+    if (_reportWork) out << " flops = " << _linkFlops << " sites = " << U->Grid()->lSites()
+                         << " model = analytic-core";
+    out << std::endl;
+    this->_state = ConfigurationState::Ready;
+  }
 
 private:
   void _cacheWorkModels() {
@@ -209,7 +233,7 @@ public: // provide promises: bound to operators by Action's signContract methods
 
 public: // implement opt-in interface
   const GaugeField resolve(std::size_t id) const {
-    _validateReadiness();
+    _ensureSmeared();
     GRID_ASSERT(id <= _epsilons.size() && "unregistered HISQ output");
     if (id == 0) { return W; }
     else { RealD eps = _epsilons[id - 1]; return eps == 0 ? X : X + (eps/8.0)*W; }
@@ -220,30 +244,14 @@ public: // implement opt-in interface
     return {this, id};
   }
 
-  const GaugeField& fundamental() const { _validateReadiness(); return *U; }
+  const GaugeField& fundamental() const { _validateLinks(); return *U; }
 
-  void smear() {
-    this->smeared();
-    GRID_ASSERT(U != NULL && "HISQ links not prepared; call set_Field");
-    GRID_ASSERT(!_epsilons.empty() && "no HISQ context registered");
-
-    double begin = usecond();
-    
-    _hisf.smear(V, *U, _ctx.fat7());
-    _hisf.project(W, V, _ctx.proj());
-    _hisf.smear(X, W, _ctx.asqtad());
-
-    auto& out = std::cout << GridLogMessage;
-    out << "Smearing in " << (usecond() - begin) << " ms";
-    if (_reportWork) out << " flops = " << _linkFlops << " sites = " << U->Grid()->lSites()
-                         << " model = analytic-core";
-    out << std::endl;
-    this->fulfilled();
-  }
+  /** @brief Smears now; otherwise smearing happens when smeared links are first requested */
+  void smear() { _validateLinks(); _smear(); }
 
   void pullback(GaugeField& dSdU, PrimalCotangentPairs<GaugeField>& inputs) const {
     conformable(dSdU.Grid(), V.Grid());
-    _validateReadiness();
+    _ensureSmeared();
     size_t asqtadInputs = 0;
     for (const auto& input : inputs) {
       const auto& primal = input.primal();
@@ -294,12 +302,13 @@ public: // implement opt-in interface
   };
 
 public: // implement legacy interface
-  void set_Field(GaugeField& ThinkLink) { this->set(); U = &ThinkLink; smear(); }
+  // Smearing is deferred until smeared links are requested; ThinkLink must stay alive
+  // and unmodified until then (call set_Field again after modifying it)
+  void set_Field(GaugeField& ThinkLink) { this->set(); U = &ThinkLink; }
 
   GaugeField& get_U(bool smeared = false) { 
-    _validateReadiness();
-    if (smeared) { return X; }
-    else { return *U; }
+    if (smeared) { _ensureSmeared(); return X; }
+    else { _validateLinks(); return *U; }
   }
 
   GaugeField& get_SmearedU() { return get_U(true); }

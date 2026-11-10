@@ -266,25 +266,49 @@ private:
      * corresponding force at FourFlavorStaggeredEvenEvenPseudoFermionAction::_deriv
      * for details.
      * 
+     * For each multi-shift solution Psi_i, the two terms of the unrooted force*** are
+     * the derivatives of the bilinears Psi_i^dag M Chi_i (Term 1***) and
+     * Chi_i^dag M^dag Psi_i (Term 2***), in the convention of the operator's
+     * DerivInternal. Because the mass term drops out of the derivative and
+     * M^dag = -M(-m) for staggered operators, they combine into the derivative of a
+     * single full-grid bilinear:
+     * (2) Term 1*** + Term 2*** = d[ Psi_i^dag M Chi_i - Chi_i^dag M Psi_i ]
+     *                           = d[ L_i^dag M R_i ],
+     * where
+     * (3) L_i = Psi_i (even) + Chi_i (odd)
+     * and
+     * (4) R_i = -Psi_i (even) + Chi_i (odd).
+     * The bilinears of all solutions are passed to the operator as one weighted sum
+     * with the residues alpha_i as weights, so that field-independent work in the
+     * operator's derivative (e.g., the three-hop recursion of the improved staggered
+     * operator) can be done once per force rather than twice per pole.
+     *
      * ***Grid::FourFlavorStaggeredEvenEvenPseudoFermionAction::_deriv docs
      */
     const int numPoles = NegOneQuarterDeriv.poles.size();
     std::vector<FermionField> Psis(numPoles, FermOp.FermionRedBlackGrid());
+    std::vector<FermionField> lefts(numPoles, FermOp.FermionGrid());
+    std::vector<FermionField> rights(numPoles, FermOp.FermionGrid());
     FermionField Chi(FermOp.FermionRedBlackGrid());
+    FermionField minusPsi(FermOp.FermionRedBlackGrid());
 
     _multiShiftSolve(NegOneQuarterDeriv, Phi, Psis); // Eqn (2a)***
-    dSdU = Zero();
+
     for (int i = 0; i < numPoles; ++i) {
       FermOp.Meooe(Psis[i], Chi); // Eqn (2b)***
+      minusPsi = -Psis[i];
 
-      auto eo = [&](auto& out) // Term 1***
-      { FermOp.MeoDeriv(out, Psis[i], Chi, DaggerNo); };
-      auto oe = [&](auto& out) // Term 2***
-      { FermOp.MoeDeriv(out, Chi, Psis[i], DaggerYes); };
-
-      accumulate(dSdU, _contract, NegOneQuarterDeriv.residues[i], eo); // <-+- Eqn (1)***
-      accumulate(dSdU, _contract, NegOneQuarterDeriv.residues[i], oe); // <-+
+      setCheckerboard(lefts[i], Psis[i]);   // <-+- Eqn (3)
+      setCheckerboard(lefts[i], Chi);       // <-+
+      setCheckerboard(rights[i], minusPsi); // <-+- Eqn (4)
+      setCheckerboard(rights[i], Chi);      // <-+
     }
+
+    auto poles = [&](auto& out) // Terms 1 and 2*** of every solution; Eqn (2)
+    { FermOp.MDeriv(out, lefts, rights, NegOneQuarterDeriv.residues, DaggerNo); };
+
+    dSdU = Zero();
+    accumulate(dSdU, _contract, poles); // Eqn (1), each term as in Eqn (1)***
   }
 
 public:

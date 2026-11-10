@@ -337,6 +337,24 @@ private:
      * documentation for the corresponding force at
      * FourFlavorStaggeredEvenEvenPseudoFermionAction::_deriv for details.
      *
+     * As in StaggeredEvenEvenRational::_deriv, a checkerboarded Term 1*** (left field
+     * on the even checkerboard) and Term 2*** (left field on the odd checkerboard,
+     * DaggerYes) combine into the derivative of a single full-grid bilinear. Because
+     * the mass term drops out of the derivative and M^dag = -M(-m) for staggered
+     * operators,
+     * (5) d[ L^dag M R ] = d[ A^dag M E ] + d[ B^dag M^dag C ]
+     * for
+     * (6) L = A (even) + B (odd),  R = -C (even) + E (odd).
+     * Each denominator pole gives one such bilinear,
+     * (7) A = C = Y_d,  B = E = ChiL_d,
+     * and each numerator pole gives two,
+     * (8a) A = Z_n, B = ChiL_n, C = X_n, E = ChiR_n,
+     * (8b) A = X_n, B = ChiR_n, C = Z_n, E = ChiL_n,
+     * weighted by the residues of Eqn (3). The bilinears of each operator are passed
+     * to it as one weighted sum, so that field-independent work in its derivative
+     * (e.g., the three-hop recursion of the improved staggered operator) can be done
+     * once per operator rather than once per term.
+     *
      * ***Grid::FourFlavorStaggeredEvenEvenPseudoFermionAction::_deriv docs
      */
     const int numPoles = OneEighthNumDeriv.poles.size();
@@ -351,49 +369,63 @@ private:
     FermionField ChiL(NumOp.FermionRedBlackGrid());
     FermionField ChiR(NumOp.FermionRedBlackGrid());
 
+    std::vector<FermionField> denLefts, denRights, numLefts, numRights; // Eqn (6)
+    std::vector<RealD> denWeights, numWeights;                          // Eqn (3)
+
     _multiShiftSolve(Num, OneEighthNumDeriv, Phi, Xs, X);   // Eqns (1a) & (2a)
     _multiShiftSolve(Den, NegOneQuarterDenDeriv, X, Ys, Y); // Eqns (1b) & (2b)
     _multiShiftSolve(Num, OneEighthNumDeriv, Y, Zs);        // Eqn (2c)
 
-    dSdU = Zero();
+    denLefts.reserve(denPoles);
+    denRights.reserve(denPoles);
+    numLefts.reserve(2*numPoles);
+    numRights.reserve(2*numPoles);
  
     for (int d = 0; d < denPoles; ++d) {
-      const RealD rd = NegOneQuarterDenDeriv.residues[d]; // Eqn (3)
-
       DenOp.Meooe(Ys[d], ChiL); // Eqn (4a)
 
-      auto eo = [&](auto& out) // Term 1***
-      { DenOp.MeoDeriv(out, Ys[d], ChiL, DaggerNo); };
-      auto oe = [&](auto& out) // Term 2***
-      { DenOp.MoeDeriv(out, ChiL, Ys[d], DaggerYes); };
-
-      accumulate(dSdU, _denContract, rd, eo); // <-+- First sum in Eqn (3)
-      accumulate(dSdU, _denContract, rd, oe); // <-+
+      _appendBilinear(DenOp, denLefts, denRights, Ys[d], ChiL, Ys[d], ChiL); // Eqn (7)
+      denWeights.push_back(NegOneQuarterDenDeriv.residues[d]);
     }
 
     for (int n = 0; n < numPoles; ++n) {
-      const RealD rn = OneEighthNumDeriv.residues[n]; // Eqn (3)
-
       NumOp.Meooe(Zs[n], ChiL); // Eqn (4b)
       NumOp.Meooe(Xs[n], ChiR); // Eqn (4c)
 
-      // Term 1***
-      auto eoA = [&](auto& out)
-      { NumOp.MeoDeriv(out, Zs[n], ChiR, DaggerNo); };
-      auto eoB = [&](auto& out)
-      { NumOp.MeoDeriv(out, Xs[n], ChiL, DaggerNo); };
-
-      // Term 2***
-      auto oeA = [&](auto& out)
-      { NumOp.MoeDeriv(out, ChiL, Xs[n], DaggerYes); };
-      auto oeB = [&](auto& out)
-      { NumOp.MoeDeriv(out, ChiR, Zs[n], DaggerYes); };
-
-      accumulate(dSdU, _numContract, rn, eoA); // <-+- Second sum in Eqn (3)
-      accumulate(dSdU, _numContract, rn, eoB); //   |
-      accumulate(dSdU, _numContract, rn, oeA); //   |
-      accumulate(dSdU, _numContract, rn, oeB); // <-+
+      _appendBilinear(NumOp, numLefts, numRights, Zs[n], ChiL, Xs[n], ChiR); // Eqn (8a)
+      _appendBilinear(NumOp, numLefts, numRights, Xs[n], ChiR, Zs[n], ChiL); // Eqn (8b)
+      numWeights.insert(numWeights.end(), 2, OneEighthNumDeriv.residues[n]);
     }
+
+    auto den = [&](auto& out) // Terms 1 and 2*** of every denominator pole; Eqn (5)
+    { DenOp.MDeriv(out, denLefts, denRights, denWeights, DaggerNo); };
+    auto num = [&](auto& out) // Terms 1 and 2*** of every numerator pole; Eqn (5)
+    { NumOp.MDeriv(out, numLefts, numRights, numWeights, DaggerNo); };
+
+    dSdU = Zero();
+    accumulate(dSdU, _denContract, den); // <-+- First sum in Eqn (3)
+    accumulate(dSdU, _numContract, num); // <-+- Second sum in Eqn (3)
+  }
+
+  void _appendBilinear(
+    FermionOperator<Impl>& op,
+    std::vector<FermionField>& lefts,
+    std::vector<FermionField>& rights,
+    const FermionField& A, // even
+    const FermionField& B, // odd
+    const FermionField& C, // even
+    const FermionField& E  // odd
+  ) { // Eqn (6) of _deriv
+    FermionField minusC(C.Grid());
+    minusC = -C;
+
+    lefts.emplace_back(op.FermionGrid());
+    rights.emplace_back(op.FermionGrid());
+
+    setCheckerboard(lefts.back(), A);
+    setCheckerboard(lefts.back(), B);
+    setCheckerboard(rights.back(), minusC);
+    setCheckerboard(rights.back(), E);
   }
 
 public:

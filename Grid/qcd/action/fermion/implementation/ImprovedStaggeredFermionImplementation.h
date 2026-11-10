@@ -361,6 +361,183 @@ void ImprovedStaggeredFermion<Impl>::DerivInternal(
   PrimalCotangentPairs<GaugeField>& derivs,
   const DoubledGaugeField& U, // never used for computation
   const DoubledGaugeField& UUU,
+  const std::vector<const FermionField*>& lefts,
+  const std::vector<const FermionField*>& rights,
+  const std::vector<RealD>& weights,
+  int dag
+) {
+  /**
+   * @brief Forward Wirtinger derivative of weighted sums of kinetic fermion bilinears
+   * @author Curtis Taylor Peterson
+   * @details
+   * This method calculates the forward Wirtinger derivative of the weighted sum
+   * (1) sum_i w_i phi_{left,i}^dag M(m) phi_{right,i}
+   * of fermion bilinears. The notation and conventions are those of the single-bilinear
+   * DerivInternal overload, whose equations are referred to with an asterisk below.
+   *
+   * Each bilinear enters the derivative only through two outer products:
+   * (2a) the one-hop outer products of Eqn (4)*, before the reimposition of the
+   *      Dirichlet masks, and
+   * (2b) the three-hop outer products K_{mu}^{(0)} of Eqn (7)*.
+   * Everything that follows them --- the reimposition of the one-hop Dirichlet masks,
+   * the three-hop recursion of Eqn (6)*, the factor of W_{mu}^dag in Eqn (8)*, and the
+   * sign from Eqn (9)* --- is a linear map F that is independent of the fermion fields.
+   * As such, one has
+   * (3) d[ sum_i w_i phi_{left,i}^dag M phi_{right,i} ] = F[ sum_i w_i O_i ],
+   * where O_i stands for the outer products of Eqns (2a) and (2b) for the i'th bilinear.
+   * This method accumulates the weighted outer products of all bilinears with
+   * DerivAccumulate, then applies F once with DerivFinalize. The field-independent work
+   * is therefore done once per sum rather than once per bilinear. A single bilinear with
+   * unit weight reproduces the single-bilinear overload, which forwards here.
+   *
+   * All bilinears are evaluated with the same stencil, so the left fields must share
+   * a grid and checkerboard, as must the right fields.
+   */
+  GRID_ASSERT(dag == DaggerNo || dag == DaggerYes);
+  GRID_ASSERT(derivs.size() == 1 || derivs.size() == 2);
+  GRID_ASSERT(!lefts.empty());
+  GRID_ASSERT(lefts.size() == rights.size() && lefts.size() == weights.size());
+  
+  conformable(derivs, _grid);
+
+  GridBase* GaugeGrid = U.Grid();
+  GridBase* FermionGrid = lefts[0]->Grid();
+  const int cb = lefts[0]->Checkerboard();
+
+  for (std::size_t i = 0; i < lefts.size(); ++i) {
+    conformable(lefts[i]->Grid(), FermionGrid);
+    conformable(rights[i]->Grid(), FermionGrid);
+    GRID_ASSERT(lefts[i]->Checkerboard() == cb);
+    GRID_ASSERT(rights[i]->Checkerboard() == rights[0]->Checkerboard());
+  }
+  
+  // weighted sums of outer products; Eqns (2a) and (2b)
+  std::vector<GaugeLinkField> oneHop(c1 != 0.0 ? Nd : 0, FermionGrid);
+  std::vector<GaugeLinkField> threeHop(c2 != 0.0 ? Nd : 0, FermionGrid);
+
+  for (auto& sum : oneHop) { sum.Checkerboard() = cb; sum = Zero(); }
+  for (auto& sum : threeHop) { sum.Checkerboard() = cb; sum = Zero(); }
+
+  // staggered and boundary phases folded in m_{1-hop,mu}(n); Eqn (4)*
+  GaugeField X(GaugeGrid);
+
+  if (c1 != 0.0) {
+    X.Checkerboard() = U.Checkerboard();
+    X = 0.5*c1/u0;
+    this->rephase(_grid, X);
+  }
+
+  for (std::size_t i = 0; i < lefts.size(); ++i) // Eqn (3), sum over bilinears
+  { DerivAccumulate(stencil, X, UUU, *lefts[i], *rights[i], weights[i], oneHop, threeHop); }
+
+  DerivFinalize(derivs, oneHop, threeHop, dag); // Eqn (3), application of F
+}
+
+template <class Impl>
+void ImprovedStaggeredFermion<Impl>::DerivAccumulate(
+  StencilImpl& stencil,
+  const GaugeField& X,
+  const DoubledGaugeField& UUU,
+  const FermionField& left,
+  const FermionField& right,
+  RealD weight,
+  std::vector<GaugeLinkField>& oneHop,
+  std::vector<GaugeLinkField>& threeHop
+) {
+  /**
+   * @brief Accumulates the outer products of one weighted fermion bilinear
+   * @author Curtis Taylor Peterson
+   * @details
+   * Adds the weighted one-hop and three-hop outer products of Eqns (2a) and (2b) of the
+   * batched DerivInternal overload for a single bilinear phi_{left}^dag M phi_{right}.
+   * X holds the one-hop coefficient and phases of m_{1-hop,mu}(n), without Dirichlet
+   * masks; UUU is the stored three-hop term. A term with a vanishing coefficient (c1 or
+   * c2) has no outer products and is skipped.
+   */
+  FermionField rightTilde = right;
+
+  Compressor compressor;
+
+  stencil.HaloExchange(right, compressor);
+
+  // one-hop outer products; Eqn (4) of the single-bilinear overload
+  if (c1 != 0.0) {
+    for (int mu = 0; mu < Nd; ++mu) {
+      Kernels::DhopDirForward(stencil, X, right, rightTilde, mu, 0);
+      oneHop[mu] += weight*this->outer(rightTilde, left);
+  } }
+
+  // three-hop outer products; Eqn (7) of the single-bilinear overload
+  if (c2 != 0.0) {
+    for (int mu = 0; mu < Nd; ++mu) {
+      Kernels::DhopDirForward(stencil, UUU, right, rightTilde, mu, 1);
+      threeHop[mu] += weight*this->outer(rightTilde, left);
+  } }
+}
+
+template <class Impl>
+void ImprovedStaggeredFermion<Impl>::DerivFinalize(
+  PrimalCotangentPairs<GaugeField>& derivs,
+  const std::vector<GaugeLinkField>& oneHop,
+  const std::vector<GaugeLinkField>& threeHop,
+  int dag
+) {
+  /**
+   * @brief Writes derivatives from accumulated outer products
+   * @author Curtis Taylor Peterson
+   * @details
+   * Applies the field-independent linear map F of the batched DerivInternal overload to
+   * the accumulated one-hop and three-hop outer products and writes the result to the
+   * derivative ports. Equation numbers refer to the single-bilinear overload.
+   */
+  const std::size_t oneHopPort = derivs.size() - 1; // single-port branch compatibility
+  const std::size_t threeHopPort = 0;
+
+  derivs = Zero();
+
+  if (c1 != 0.0) {
+    // one-hop Wirtinger derivative; Eqn (4)
+    for (int mu = 0; mu < Nd; ++mu) { pokeLorentz(derivs[oneHopPort], oneHop[mu], mu); }
+
+    // reimposition of Dirichlet masks contributing to m_{1-hop,mu}(n); Eqn (4)
+    if (Dirichlet) { this->applyDirichletMasks(derivs[oneHopPort], Block); }
+  }
+
+  if (c2 != 0.0) {
+    const GaugeField& W = derivs[threeHopPort].gauge();
+    GaugeLinkField cmp(_grid);
+    PrimalCotangentPair<GaugeField> threeHopPair(derivs[threeHopPort].primal());
+
+    for (int mu = 0; mu < Nd; ++mu) {
+      GaugeLinkField w = peekLorentz(W, mu);
+
+      // first term - same structure as one-hop contribution; Eqn (7)
+      pokeLorentz(threeHopPair, threeHop[mu], mu);
+      GaugeLinkField component = peekLorentz(threeHopPair, mu);
+
+      // second term - requires communication, but necessary; Eqn (6)
+      cmp = Cshift(adj(w)*component*w, mu, -1);
+      component += cmp;
+
+      // third term - requires communication, but necessary; Eqn (6)
+      cmp = Cshift(adj(w)*cmp*w, mu, -1);
+      component += cmp;
+
+      pokeLorentz(threeHopPair, adj(w)*component, mu);
+    }
+    // accumulate three-hop contributions into the main derivative object; Eqn (8)
+    derivs[threeHopPort] += threeHopPair;
+  }
+
+  if (dag == DaggerYes) { derivs *= -1; }
+}
+
+template <class Impl>
+void ImprovedStaggeredFermion<Impl>::DerivInternal(
+  StencilImpl& stencil,
+  PrimalCotangentPairs<GaugeField>& derivs,
+  const DoubledGaugeField& U, // never used for computation
+  const DoubledGaugeField& UUU,
   const FermionField& left, 
   const FermionField& right, 
   int dag
@@ -452,73 +629,16 @@ void ImprovedStaggeredFermion<Impl>::DerivInternal(
    * for staggered Dirac operators. As such, the forward derivative of M^dag can be 
    * obtained from the forward derivative of M by multiplying by -1 (the derivative 
    * knocks out the constant mass term).
+   *
+   * implementation
+   * --------------
+   *
+   * A single bilinear is the unit-weight case of the weighted sums handled by the
+   * batched DerivInternal overload, to which this method forwards. There, Eqns (4) and
+   * (7) are evaluated by DerivAccumulate and everything that follows them by
+   * DerivFinalize; see the batched overload for details.
    */
-  GRID_ASSERT(dag == DaggerNo || dag == DaggerYes);
-  GRID_ASSERT(derivs.size() == 1 || derivs.size() == 2);
-  
-  conformable(derivs, _grid);
-
-  const std::size_t oneHopPort = derivs.size() - 1; // single-port branch compatibility
-  const std::size_t threeHopPort = 0;
-
-  GridBase* GaugeGrid = U.Grid();
-  GridBase* FermionGrid = left.Grid();
-  
-  FermionField leftTilde(FermionGrid);
-  FermionField rightTilde = right;
-
-  Compressor compressor;
-
-  stencil.HaloExchange(right, compressor);
-
-  derivs = Zero();
-
-  if (c1 != 0.0) {
-    GaugeField X(GaugeGrid);
-
-    // staggered and boundary phases folded in m_{1-hop,mu}(n); Eqn (4)
-    X.Checkerboard() = U.Checkerboard();
-    X = 0.5*c1/u0;
-    this->rephase(_grid, X);
-
-    // one-hop Wirtinger derivative; Eqn (4)
-    for (int mu = 0; mu < Nd; ++mu) {
-      Kernels::DhopDirForward(stencil, X, right, rightTilde, mu, 0);
-      pokeLorentz(derivs[oneHopPort], this->outer(rightTilde, left), mu);
-    }
-
-    // reimposition of Dirichlet masks contributing to m_{1-hop,mu}(n); Eqn (4)
-    if (Dirichlet) { this->applyDirichletMasks(derivs[oneHopPort], Block); }
-  }
-
-  if (c2 != 0.0) {
-    const GaugeField& W = derivs[threeHopPort].gauge();
-    GaugeLinkField cmp(_grid);
-    PrimalCotangentPair<GaugeField> threeHop(derivs[threeHopPort].primal());
-
-    for (int mu = 0; mu < Nd; ++mu) {
-      GaugeLinkField w = peekLorentz(W, mu);
-
-      // first term - same structure as one-hop contribution; Eqn (7)
-      Kernels::DhopDirForward(stencil, UUU, right, rightTilde, mu, 1);
-      pokeLorentz(threeHop, this->outer(rightTilde, left), mu);
-      GaugeLinkField component = peekLorentz(threeHop, mu);
-
-      // second term - requires communication, but necessary; Eqn (6)
-      cmp = Cshift(adj(w)*component*w, mu, -1);
-      component += cmp;
-
-      // third term - requires communication, but necessary; Eqn (6)
-      cmp = Cshift(adj(w)*cmp*w, mu, -1);
-      component += cmp;
-
-      pokeLorentz(threeHop, adj(w)*component, mu);
-    }
-    // accumulate three-hop contributions into the main derivative object; Eqn (8)
-    derivs[threeHopPort] += threeHop;
-  }
-
-  if (dag == DaggerYes) { derivs *= -1; }
+  DerivInternal(stencil, derivs, U, UUU, {&left}, {&right}, {1.0}, dag);
 }
 
 template <class Impl>
@@ -543,6 +663,27 @@ void ImprovedStaggeredFermion<Impl>::DhopDeriv(
   conformable(left.Grid(), _grid);
   conformable(left.Grid(), right.Grid());
   DerivInternal(Stencil, derivs, Umu, UUUmu, left, right, dag);
+}
+
+template <class Impl>
+void ImprovedStaggeredFermion<Impl>::DhopDeriv(
+  PrimalCotangentPairs<GaugeField>& derivs,
+  const std::vector<FermionField>& left,
+  const std::vector<FermionField>& right,
+  const std::vector<RealD>& weights,
+  int dag
+) {
+  // Weighted sum over bilinears; field-independent work done once (see DerivInternal)
+  GRID_ASSERT(left.size() == right.size());
+
+  std::vector<const FermionField*> lefts, rights;
+  for (std::size_t i = 0; i < left.size(); ++i) {
+    conformable(left[i].Grid(), _grid);
+    conformable(left[i].Grid(), right[i].Grid());
+    lefts.push_back(&left[i]);
+    rights.push_back(&right[i]);
+  }
+  DerivInternal(Stencil, derivs, Umu, UUUmu, lefts, rights, weights, dag);
 } 
 
 template <class Impl>

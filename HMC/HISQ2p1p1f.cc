@@ -598,6 +598,94 @@ MultiShiftFunction combinedRationalFunction(
 }
 
 ////////////////////////////////////////////////////////////////
+// Pseudofermion fields sharing one HISQ pullback per force
+////////////////////////////////////////////////////////////////
+
+// The HISQ configuration as seen by the fields' forces: pullbacks are recorded, summed
+// and returned as zero forces; everything else is the HISQ configuration's own
+class DeferredPullback : public ConfigurationBase<HMCWrapper::Field> {
+  typedef HMCWrapper::Field Field;
+
+  ConfigurationBase<Field>& _links;
+  mutable PrimalCotangentPairs<Field> _pending;
+
+public:
+  explicit DeferredPullback(ConfigurationBase<Field>& links): _links(links) {}
+
+  PrimalCotangentPairs<Field>& pending() { return _pending; }
+
+  void pullback(Field& UdSdU, PrimalCotangentPairs<Field>& dSdU) const override
+  { _pending += std::move(dSdU); UdSdU = Zero(); }
+
+  void set_Field(Field& U) override { _links.set_Field(U); }
+  void smeared_force(Field& UdSdU) override { _links.smeared_force(UdSdU); }
+  Field& get_SmearedU() override { return _links.get_SmearedU(); }
+  Field& get_U(bool smeared = false) override { return _links.get_U(smeared); }
+  void smear() override { _links.smear(); }
+  Primal<Field> primal(std::size_t id) const override { return _links.primal(id); }
+  const Field& fundamental() const override { return _links.fundamental(); }
+  const Field resolve(std::size_t id) const override { return _links.resolve(id); }
+};
+
+// MILC applies the HISQ chain rule once per force to the sum over all pseudofermions.
+// Grouping the fields into one action does the same: each field's force stops at its
+// cotangents (on the DeferredPullback), and their sum is pulled back once. Refresh and
+// action evaluations are those of the individual fields.
+class HISQPseudoFermions : public Action<HMCWrapper::Field> {
+  typedef HMCWrapper::Field Field;
+
+  std::vector<Action<Field>*> _fields;
+
+public:
+  using Action<Field>::Sinitial;
+
+  void push_back(Action<Field>* field) {
+    GRID_ASSERT(field->hasOptedIn() && "fields must use the HISQ link interface (signContract)");
+    _fields.push_back(field);
+  }
+
+  std::string action_name() override { return "HISQPseudoFermions"; }
+
+  std::string LogParameters() override {
+    std::string parameters;
+    for (auto* field : _fields) parameters += field->LogParameters();
+    return parameters;
+  }
+
+  // through the HISQ configuration only
+  void refresh(const Field&, GridSerialRNG&, GridParallelRNG&) override
+  { GRID_ASSERT(0 && "HISQPseudoFermions needs the HISQ configuration"); }
+  RealD S(const Field&) override
+  { GRID_ASSERT(0 && "HISQPseudoFermions needs the HISQ configuration"); return 0.0; }
+  void deriv(const Field&, Field&) override
+  { GRID_ASSERT(0 && "HISQPseudoFermions needs the HISQ configuration"); }
+
+  void refresh(ConfigurationBase<Field>& U, GridSerialRNG& sRNG, GridParallelRNG& pRNG) override
+  { for (auto* field : _fields) field->refresh(U, sRNG, pRNG); }
+
+  RealD S(ConfigurationBase<Field>& U) override { return sum(U, false); }
+  RealD Sinitial(ConfigurationBase<Field>& U) override { return sum(U, true); }
+
+  void deriv(ConfigurationBase<Field>& U, Field& UdSdU) override {
+    DeferredPullback deferred(U);
+    Field zero(UdSdU.Grid());
+    for (auto* field : _fields) field->deriv(deferred, zero); // cotangents only
+    U.pullback(UdSdU, deferred.pending());                     // one HISQ chain rule
+  }
+
+private:
+  RealD sum(ConfigurationBase<Field>& U, bool initial) {
+    RealD total = 0.0;
+    for (int i = 0; i < _fields.size(); ++i) {
+      const RealD term = initial ? _fields[i]->Sinitial(U) : _fields[i]->S(U);
+      std::cout << GridLogMessage << action_name() << " field " << i << " S = " << term << std::endl;
+      total += term;
+    }
+    return total;
+  }
+};
+
+////////////////////////////////////////////////////////////////
 // Serializable structs (for reading inputs)
 ////////////////////////////////////////////////////////////////
 
@@ -1268,6 +1356,7 @@ int main(int argc, char **argv) {
   ActionLevel<HMCWrapper::Field> Level2(deck.GaugeStepMultiplicity);
 
   std::deque<FermionAction> Fields;
+  HISQPseudoFermions Fermions; // all fields share one HISQ pullback per force
   for (const auto& spec : deck.Fields) {
     auto& Op = Operators.try_emplace(
       spec.NaikEpsilon,
@@ -1275,8 +1364,9 @@ int main(int argc, char **argv) {
     ).first->second;
     Fields.emplace_back(Op, spec.Params, spec.HeatBath, spec.Action, spec.Deriv, spec.ActionIsNorm);
     Fields.back().signContract(Policy.promise(spec.NaikEpsilon));
-    Level1.push_back(&Fields.back());
+    Fermions.push_back(&Fields.back());
   }
+  Level1.push_back(&Fermions);
 
   // Eq. A2, beta = 10/g^2. Tadpole improvement is gauge-only.
   const RealD u0 = deck.TadpoleFactor;
@@ -1312,7 +1402,7 @@ int main(int argc, char **argv) {
     // Only redirect the printing rank: rdbuf() clears Grid's MPI quiet state.
     MILCOutput output(
       milcOutput && GridPtr->IsBoss(), 
-      Fields.size(), 
+      Level1.actions.size(), // fermion actions as the HMC sees them (one group)
       GridPtr->gSites(),
       TheHMC.Parameters.MD.MDsteps * (milc ? 2 : 1),
       TheHMC.Parameters.StartTrajectory,

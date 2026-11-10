@@ -181,8 +181,8 @@ public:
 public:
   using ConfigurationState = Grid::ConfigurationState;
   
-protected:
-  ConfigurationState _state = ConfigurationState::NotReady;
+  // mutable: const accessors may bring smeared links up to date on demand
+  mutable ConfigurationState _state = ConfigurationState::NotReady;
 
 private:
   [[noreturn]] void _hasNotOptedIn() const
