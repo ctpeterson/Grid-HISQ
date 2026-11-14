@@ -167,14 +167,18 @@ private:
 
     FermOp.Meooe(Phi, Chi); // Eqn (1)
 
-    auto eo = [&](auto& out) // Term 1
-    { FermOp.MeoDeriv(out, Phi, Chi, DaggerNo); };
-    auto oe = [&](auto& out) // Term 2
-    { FermOp.MoeDeriv(out, Chi, Phi, DaggerYes); };
+    FermionField left(FermOp.FermionGrid()), right(FermOp.FermionGrid());
+    FermionField minusPhi(Phi.Grid());
+    minusPhi = -Phi;
+    setCheckerboard(left, Phi);
+    setCheckerboard(left, Chi);
+    setCheckerboard(right, minusPhi);
+    setCheckerboard(right, Chi);
+    auto bilinear = [&](auto& out)
+    { FermOp.MDeriv(out, left, right, DaggerNo); };
 
     dSdU = Zero();
-    accumulate(dSdU, _contract, -1.0, eo); // <-+- Eqn (2)
-    accumulate(dSdU, _contract, -1.0, oe); // <-+
+    accumulate(dSdU, _contract, -1.0, bilinear);
   }
 
 public:

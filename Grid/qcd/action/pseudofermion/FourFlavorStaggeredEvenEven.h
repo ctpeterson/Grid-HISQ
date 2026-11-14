@@ -197,20 +197,23 @@ private:
      */
     FermionField Psi(FermOp.FermionRedBlackGrid());
     FermionField Chi(FermOp.FermionRedBlackGrid());
+    FermionField left(FermOp.FermionGrid()), right(FermOp.FermionGrid());
     SchurStaggeredOperator<FermionOperator<Impl>, FermionField> MdagM(FermOp);
 
     Psi = Zero();
     DerivativeSolver(MdagM, Phi, Psi); // Eqn (2a)
     FermOp.Meooe(Psi, Chi);            // Eqn (2b)
 
-    auto eo = [&](auto& out) // Term 1
-    { FermOp.MeoDeriv(out, Psi, Chi, DaggerNo); };
-    auto oe = [&](auto& out) // Term 2
-    { FermOp.MoeDeriv(out, Chi, Psi, DaggerYes); };
+    setCheckerboard(left, Psi);
+    setCheckerboard(left, Chi);
+    Psi = -Psi;
+    setCheckerboard(right, Psi);
+    setCheckerboard(right, Chi);
+    auto bilinear = [&](auto& out)
+    { FermOp.MDeriv(out, left, right, DaggerNo); };
 
     dSdU = Zero();
-    accumulate(dSdU, _contract, eo); // <-+- Eqn (1)
-    accumulate(dSdU, _contract, oe); // <-+
+    accumulate(dSdU, _contract, bilinear);
   }
 
 public:

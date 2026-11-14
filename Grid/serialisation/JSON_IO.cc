@@ -26,7 +26,6 @@
     *************************************************************************************/
     /*  END LEGAL */
 #include <Grid/Grid.h>
-#ifndef GRID_HIP
 
 NAMESPACE_BEGIN(Grid);
 
@@ -169,4 +168,3 @@ void JSONReader::readDefault(const std::string &s, std::string &output)
   }
 }
 NAMESPACE_END(Grid);
-#endif

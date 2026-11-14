@@ -77,6 +77,7 @@ private:
   
   OperatorFunction<FermionField>& DerivativeSolver;
   OperatorFunction<FermionField>& ActionSolver;
+  OperatorFunction<FermionField>& HeatbathSolver;
 
   ActionContract<GaugeField> _numContract, _denContract;
 
@@ -85,14 +86,23 @@ public:
 
 public:
   FourFlavorStaggeredEvenEvenRatioPseudoFermionAction(
+    FermionOperator<Impl>& _NumOp,
+    FermionOperator<Impl>& _DenOp,
+    OperatorFunction<FermionField>& DS,
+    OperatorFunction<FermionField>& AS
+  ):FourFlavorStaggeredEvenEvenRatioPseudoFermionAction(_NumOp, _DenOp, DS, AS, AS) {}
+
+  FourFlavorStaggeredEvenEvenRatioPseudoFermionAction(
     FermionOperator<Impl>& _NumOp, 
-	  FermionOperator<Impl>& _DenOp, 
-	  OperatorFunction<FermionField>& DS,
-	  OperatorFunction<FermionField>& AS
+    FermionOperator<Impl>& _DenOp,
+    OperatorFunction<FermionField>& DS,
+    OperatorFunction<FermionField>& AS,
+    OperatorFunction<FermionField>& HS
   ):NumOp(_NumOp), 
     DenOp(_DenOp), 
     DerivativeSolver(DS), 
     ActionSolver(AS), 
+    HeatbathSolver(HS),
     Phi(_NumOp.FermionRedBlackGrid()) { 
     _scale = std::sqrt(0.5);
     _delta = NumOp.Mass()*NumOp.Mass() - DenOp.Mass()*DenOp.Mass();
@@ -165,7 +175,7 @@ private:
     Phi.Checkerboard() = Even;
     Phi = Zero();
     
-    ActionSolver(MdagMOp, Psi, Phi);                   // <-+- Eqn (7)
+    HeatbathSolver(MdagMOp, Psi, Phi);
     Phi = EtaEven + (DenOp.Mass() - NumOp.Mass())*Phi; // <-+
   }
 
@@ -218,25 +228,28 @@ private:
     DerivativeSolver(MdagM, Phi, Psi); // Eqn (2a)***
     DenOp.Meooe(Psi, Chi);             // Eqn (2b)***
 
-    auto eo = [&](auto& out) // Term 1***
-    { DenOp.MeoDeriv(out, Psi, Chi, DaggerNo); };
-    auto oe = [&](auto& out) // Term 2***
-    { DenOp.MoeDeriv(out, Chi, Psi, DaggerYes); };
+    FermionField left(DenOp.FermionGrid()), right(DenOp.FermionGrid());
+    setCheckerboard(left, Psi);
+    setCheckerboard(left, Chi);
+    Psi = -Psi;
+    setCheckerboard(right, Psi);
+    setCheckerboard(right, Chi);
+    auto bilinear = [&](auto& out)
+    { DenOp.MDeriv(out, left, right, DaggerNo); };
 
     dSdU = Zero();
-    accumulate(dSdU, _denContract, _delta, eo); // <-+- Eqn (1)***
-    accumulate(dSdU, _denContract, _delta, oe); // <-+
+    accumulate(dSdU, _denContract, _delta, bilinear);
   }
 
 public:
   virtual void refresh(const GaugeField& U, GridSerialRNG& sRNG, GridParallelRNG& pRNG)
-  { NumOp.ImportGauge(U); DenOp.ImportGauge(U); _refresh(pRNG); }
+  { NumOp.ImportGauge(U); _refresh(pRNG); }
 
   virtual RealD S(const GaugeField& U) 
-  { NumOp.ImportGauge(U); DenOp.ImportGauge(U); return _action(); }
+  { DenOp.ImportGauge(U); return _action(); }
 
   virtual void deriv(const GaugeField& U, GaugeField& UdSdU)
-  { NumOp.ImportGauge(U); DenOp.ImportGauge(U); _deriv(UdSdU); }
+  { DenOp.ImportGauge(U); _deriv(UdSdU); }
 
   virtual void refresh(
     ConfigurationBase<GaugeField>& U, 
@@ -245,14 +258,12 @@ public:
   ) {
     if (this->hasOptedIn()) {
       NumOp.ImportGauge(_numContract); 
-      DenOp.ImportGauge(_denContract); 
       _refresh(pRNG);
     } else { refresh(U.get_U(this->is_smeared), sRNG, pRNG); return; }
   }
 
   virtual RealD S(ConfigurationBase<GaugeField>& U) {
     if (this->hasOptedIn()) {
-      NumOp.ImportGauge(_numContract); 
       DenOp.ImportGauge(_denContract); 
       return _action();
     } else { return S(U.get_U(this->is_smeared)); }
@@ -263,7 +274,6 @@ public:
   virtual void deriv(ConfigurationBase<GaugeField>& U, GaugeField& UdSdU) {
     if (this->hasOptedIn()) {
       PrimalCotangentPairs<GaugeField> dSdU;
-      NumOp.ImportGauge(_numContract); 
       DenOp.ImportGauge(_denContract);
       _deriv(dSdU);
       U.pullback(UdSdU, dSdU);

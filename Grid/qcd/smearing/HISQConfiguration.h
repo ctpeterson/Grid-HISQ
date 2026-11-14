@@ -252,13 +252,13 @@ public: // implement opt-in interface
   void pullback(GaugeField& dSdU, PrimalCotangentPairs<GaugeField>& inputs) const {
     conformable(dSdU.Grid(), V.Grid());
     _ensureSmeared();
-    size_t asqtadInputs = 0;
+    size_t asqtadInputs = 0; // asqtad smearing derivatives: at most one (see below)
     for (const auto& input : inputs) {
       const auto& primal = input.primal();
       GRID_ASSERT(primal.owner() == this && "owner mismatch");
       GRID_ASSERT(primal.id() <= _epsilons.size());
       conformable(input, V);
-      if (_reportWork && primal.id() != 0) ++asqtadInputs;
+      if (primal.id() != 0) asqtadInputs = 1;
     }
 
     double start = usecond();
@@ -266,21 +266,31 @@ public: // implement opt-in interface
     GaugeField dSdW(dSdU.Grid());
 
     { // asqtad pullback
+      // The asqtad smearing derivative is linear in its input and depends on epsilon only
+      // through its one-link coefficient c0 + eps/8, whose term is (c0 + eps/8)*input. As
+      // resolve(id) = X + (eps/8) W, the one-hop inputs are summed and pulled back through
+      // one smearing derivative, with each eps/8 term added to dSdW directly.
+      GaugeField dSdX(dSdU.Grid());
+
+      dSdX = Zero();
       dSdW = Zero();
       for (const auto& input : inputs) {
         const GaugeField& deriv = input;
         const std::size_t id = input.primal().id();
 
         if (id != 0) {
-          HISFContext asqtadCtx = _ctx.asqtad();
           RealD eps = _epsilons[id - 1];
           
-          asqtadCtx.c0 += eps/8.0;
-          
-          _hisf.smearDerivative(tmp, adj(deriv), W, asqtadCtx);
-          dSdW += tmp;
+          dSdX += adj(deriv);
+          if (eps != 0.0) { dSdW += (eps/8.0)*adj(deriv); }
         } else { dSdW += adj(deriv); }
-    } }
+      }
+          
+      if (asqtadInputs) {
+        _hisf.smearDerivative(tmp, dSdX, W, _ctx.asqtad());
+        dSdW += tmp;
+      }
+    }
 
     { // unitary fat7 pullback
       UnitaryProjection<Impl> projection(_ctx.proj());

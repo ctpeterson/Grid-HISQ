@@ -51,7 +51,9 @@ class StaggeredEvenEvenRatioRational: public Action<typename Impl::GaugeField> {
  * Implements the staggered even-even (i.e., reduced) ratio rational (i.e., rooted) 
  * pseudofermion action
  * (1) S = Phi^dagger (Ndag N)^(Nf/8) (Ddag D)^(-Nf/4) (Ndag N)^(Nf/8) Phi,
- * where Phi lives on even sites only.
+ * where Phi lives on even sites only. As in MILC, the action is evaluated as the norm of
+ * (Ddag D)^(-Nf/8) (Ndag N)^(Nf/8) Phi, so the denominator's action rational approximates
+ * that half power.
  */
 public: 
   INHERIT_IMPL_TYPES(Impl);
@@ -68,7 +70,7 @@ private:
   MultiShiftFunction OneEighthNumAction;     // <---+--- action
   MultiShiftFunction OneEighthDenAction;     //     |
   MultiShiftFunction NegOneEighthNumAction;  //     |
-  MultiShiftFunction NegOneQuarterDenAction; // <---+
+  MultiShiftFunction NegOneEighthDenAction;  // <---+
   MultiShiftFunction OneEighthNumDeriv;      // <---+--- force
   MultiShiftFunction NegOneQuarterDenDeriv;  // <---+
 
@@ -134,7 +136,7 @@ public:
     _generateRemezApproximation(OneEighthNumAction, remezNum, _numParams, 8, true, false);
     _generateRemezApproximation(OneEighthDenAction, remezDen, _denParams, 8, true, false);
     _generateRemezApproximation(NegOneEighthNumAction, remezNum, _numParams, 8, true, true);
-    _generateRemezApproximation(NegOneQuarterDenAction, remezDen, _denParams, 4, true, true);
+    _generateRemezApproximation(NegOneEighthDenAction, remezDen, _denParams, 8, true, true);
     _generateRemezApproximation(OneEighthNumDeriv, remezNum, _numParams, 8, false, false);
     _generateRemezApproximation(NegOneQuarterDenDeriv, remezDen, _denParams, 4, false, true);
 
@@ -149,12 +151,12 @@ public:
     FermionOperator<Impl>& _denOp,
     const StaggeredRationalActionParams& numParams,
     const StaggeredRationalActionParams& denParams,
-    const MultiShiftFunction& numHeatBath,
-    const MultiShiftFunction& numAction,
-    const MultiShiftFunction& numDeriv,
-    const MultiShiftFunction& denHeatBath,
-    const MultiShiftFunction& denAction,
-    const MultiShiftFunction& denDeriv
+    const MultiShiftFunction& numHeatBath, // (N^dag N)^(-Nf/8)
+    const MultiShiftFunction& numAction,   // (N^dag N)^(Nf/8)
+    const MultiShiftFunction& numDeriv,    // (N^dag N)^(Nf/8)
+    const MultiShiftFunction& denHeatBath, // (D^dag D)^(Nf/8)
+    const MultiShiftFunction& denAction,   // (D^dag D)^(-Nf/8)
+    const MultiShiftFunction& denDeriv     // (D^dag D)^(-Nf/4)
   ):_numParams(numParams),
     _denParams(denParams),
     NumOp(_numOp),
@@ -162,7 +164,7 @@ public:
     OneEighthNumAction(numAction),
     OneEighthDenAction(denHeatBath),
     NegOneEighthNumAction(numHeatBath),
-    NegOneQuarterDenAction(denAction),
+    NegOneEighthDenAction(denAction),
     OneEighthNumDeriv(numDeriv),
     NegOneQuarterDenDeriv(denDeriv),
     Phi(_numOp.FermionRedBlackGrid()) {
@@ -214,15 +216,27 @@ public: // opt-in link interface: needs documentation
     _denContract = Action<GaugeField>::signContract(DenOp, denPrimals);
   }
 
-private:
-  void _multiShiftSolve(
+public: // roles of the multi-shift solves (MILC's GR, FA and MD solves)
+  enum class SolveRole { HeatBath, Action, Force };
+
+protected:
+  /**
+   * @brief Multi-shift solves of N^dag N (numerator) or D^dag D on the pseudofermion checkerboard
+   * @author Curtis Taylor Peterson
+   * @details
+   * The default solves in the precision of Impl. Derived classes can override this solve,
+   * e.g. to solve in mixed precision; role identifies the solve (heatbath, action or force),
+   * numerator its operator and maxIter its iteration limit. The other overloads forward here.
+   */
+  virtual void _multiShiftSolve(
+    SolveRole role,
     bool numerator,
+    int maxIter,
     const MultiShiftFunction& approx,
     const FermionField& in,
     std::vector<FermionField>& outs,
     FermionField& out
   ) {
-    const Integer maxIter = numerator ? _numParams.MaxIter : _denParams.MaxIter;
     SchurStaggeredOperator<FermionOperator<Impl>, FermionField> MdagM(numerator ? NumOp : DenOp);
     ConjugateGradientMultiShift<FermionField> solver(maxIter, approx);
     for (int i = 0; i < outs.size(); ++i) 
@@ -231,24 +245,39 @@ private:
     solver(MdagM, in, outs, out);
   }
 
+private:
   void _multiShiftSolve(
+    SolveRole role,
+    bool numerator,
+    const MultiShiftFunction& approx,
+    const FermionField& in,
+    std::vector<FermionField>& outs,
+    FermionField& out
+  ) {
+    const int maxIter = numerator ? _numParams.MaxIter : _denParams.MaxIter;
+    _multiShiftSolve(role, numerator, maxIter, approx, in, outs, out);
+  }
+
+  void _multiShiftSolve(
+    SolveRole role,
     bool numerator,
     const MultiShiftFunction& approx,
     const FermionField& in,
     std::vector<FermionField>& outs
   ) {
     FermionField out(NumOp.FermionRedBlackGrid());
-    _multiShiftSolve(numerator, approx, in, outs, out);
+    _multiShiftSolve(role, numerator, approx, in, outs, out);
   }
 
   void _multiShiftSolve(
+    SolveRole role,
     bool numerator,
     const MultiShiftFunction& approx,
     const FermionField& in,
     FermionField& out
   ) { 
     std::vector<FermionField> outs(approx.poles.size(), NumOp.FermionRedBlackGrid());
-    _multiShiftSolve(numerator, approx, in, outs, out);
+    _multiShiftSolve(role, numerator, approx, in, outs, out);
   }
 
 private:
@@ -273,8 +302,8 @@ private:
     gaussian(pRNG, EtaEven);
     EtaEven *= _scale; // Eqn (2)
 
-    _multiShiftSolve(Den, OneEighthDenAction, EtaEven, tmp); // <-+- Eqn (1)
-    _multiShiftSolve(Num, NegOneEighthNumAction, tmp, Phi);  // <-+
+    _multiShiftSolve(SolveRole::HeatBath, Den, OneEighthDenAction, EtaEven, tmp); // <-+- Eqn (1)
+    _multiShiftSolve(SolveRole::HeatBath, Num, NegOneEighthNumAction, tmp, Phi);  // <-+
   }
 
   RealD _action() {
@@ -283,21 +312,42 @@ private:
      * @author Curtis Taylor Peterson
      * @details
      * Computes the pseudofermion action S defined in Eqn (1) of the class
-     * documentation. The calculation is straightforward. Define
+     * documentation as MILC does. Define
      * (1a) X = (N^dag N)^{Nf/8} Phi
-     * (1b) Y = (D^dag D)^{-Nf/4} X
+     * (1b) Y = (D^dag D)^{-Nf/8} X
      * and calculate S as
-     * (2) S = X^dagger Y.
+     * (2) S = Y^dagger Y.
      * The powers are evaluated on the even checkerboard using the action rational
-     * approximations. We take the real part of the inner product numerically.
+     * approximations.
      */
     FermionField X(NumOp.FermionRedBlackGrid());
     FermionField Y(NumOp.FermionRedBlackGrid());
 
-    _multiShiftSolve(Num, OneEighthNumAction, Phi, X);   // Eqn (1a) 
-    _multiShiftSolve(Den, NegOneQuarterDenAction, X, Y); // Eqn (1b)
+    _multiShiftSolve(SolveRole::Action, Num, OneEighthNumAction, Phi, X);   // Eqn (1a) 
+    _multiShiftSolve(SolveRole::Action, Den, NegOneEighthDenAction, X, Y);  // Eqn (1b)
     
-    return innerProduct(X, Y).real(); // Eqn (2)
+    return norm2(Y); // Eqn (2)
+  }
+
+  void _appendBilinear(
+    FermionOperator<Impl>& op,
+    std::vector<FermionField>& lefts,
+    std::vector<FermionField>& rights,
+    const FermionField& A, // even
+    const FermionField& B, // odd
+    const FermionField& C, // even
+    const FermionField& E  // odd
+  ) { // Eqn (6) of _deriv
+    FermionField minusC(C.Grid());
+    minusC = -C;
+
+    lefts.emplace_back(op.FermionGrid());
+    rights.emplace_back(op.FermionGrid());
+
+    setCheckerboard(lefts.back(), A);
+    setCheckerboard(lefts.back(), B);
+    setCheckerboard(rights.back(), minusC);
+    setCheckerboard(rights.back(), E);
   }
 
   template <class Derivative>
@@ -307,8 +357,8 @@ private:
      * @author Curtis Taylor Peterson
      * @details
      * Calculates the Wirtinger derivative of the pseudofermion action defined in
-     * Eqn (1) of the docs directly below the class definition. As in docs under 
-     * _action, we start by defining
+     * Eqn (1) of the docs directly below the class definition. Writing S through the
+     * full denominator power (rather than as the norm used by _action), define
      * (1a) X = (N^dag N)^{Nf/8} Phi,
      * (1b) Y = (D^dag D)^{-Nf/4} X,
      * so that S = X^dag Y. Writing the numerator and denominator poles as betaN_j 
@@ -372,9 +422,9 @@ private:
     std::vector<FermionField> denLefts, denRights, numLefts, numRights; // Eqn (6)
     std::vector<RealD> denWeights, numWeights;                          // Eqn (3)
 
-    _multiShiftSolve(Num, OneEighthNumDeriv, Phi, Xs, X);   // Eqns (1a) & (2a)
-    _multiShiftSolve(Den, NegOneQuarterDenDeriv, X, Ys, Y); // Eqns (1b) & (2b)
-    _multiShiftSolve(Num, OneEighthNumDeriv, Y, Zs);        // Eqn (2c)
+    _multiShiftSolve(SolveRole::Force, Num, OneEighthNumDeriv, Phi, Xs, X);   // Eqns (1a) & (2a)
+    _multiShiftSolve(SolveRole::Force, Den, NegOneQuarterDenDeriv, X, Ys, Y); // Eqns (1b) & (2b)
+    _multiShiftSolve(SolveRole::Force, Num, OneEighthNumDeriv, Y, Zs);        // Eqn (2c)
 
     denLefts.reserve(denPoles);
     denRights.reserve(denPoles);
@@ -383,7 +433,6 @@ private:
  
     for (int d = 0; d < denPoles; ++d) {
       DenOp.Meooe(Ys[d], ChiL); // Eqn (4a)
-
       _appendBilinear(DenOp, denLefts, denRights, Ys[d], ChiL, Ys[d], ChiL); // Eqn (7)
       denWeights.push_back(NegOneQuarterDenDeriv.residues[d]);
     }
@@ -391,7 +440,6 @@ private:
     for (int n = 0; n < numPoles; ++n) {
       NumOp.Meooe(Zs[n], ChiL); // Eqn (4b)
       NumOp.Meooe(Xs[n], ChiR); // Eqn (4c)
-
       _appendBilinear(NumOp, numLefts, numRights, Zs[n], ChiL, Xs[n], ChiR); // Eqn (8a)
       _appendBilinear(NumOp, numLefts, numRights, Xs[n], ChiR, Zs[n], ChiL); // Eqn (8b)
       numWeights.insert(numWeights.end(), 2, OneEighthNumDeriv.residues[n]);
@@ -405,27 +453,6 @@ private:
     dSdU = Zero();
     accumulate(dSdU, _denContract, den); // <-+- First sum in Eqn (3)
     accumulate(dSdU, _numContract, num); // <-+- Second sum in Eqn (3)
-  }
-
-  void _appendBilinear(
-    FermionOperator<Impl>& op,
-    std::vector<FermionField>& lefts,
-    std::vector<FermionField>& rights,
-    const FermionField& A, // even
-    const FermionField& B, // odd
-    const FermionField& C, // even
-    const FermionField& E  // odd
-  ) { // Eqn (6) of _deriv
-    FermionField minusC(C.Grid());
-    minusC = -C;
-
-    lefts.emplace_back(op.FermionGrid());
-    rights.emplace_back(op.FermionGrid());
-
-    setCheckerboard(lefts.back(), A);
-    setCheckerboard(lefts.back(), B);
-    setCheckerboard(rights.back(), minusC);
-    setCheckerboard(rights.back(), E);
   }
 
 public:

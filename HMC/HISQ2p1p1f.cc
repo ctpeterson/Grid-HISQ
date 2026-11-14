@@ -45,24 +45,1137 @@ directory
  */
 
 #include <Grid/Grid.h>
-#include <cstdio>
+#include <array>
 #include <fstream>
-#include <initializer_list>
-#include <iterator>
-#include <chrono>
-#include <iomanip>
-#include <streambuf>
 #include <deque>
-#include <limits>
-#include <map>
 #include <regex>
 #include <sstream>
 
 using namespace Grid;
 
-////////////////////////////////////////////////////////////////
-// Driver types and MILC records
-////////////////////////////////////////////////////////////////
+//
+// driver types
+//
+
+using HMCWrapper = HMCWrapperTemplate<PeriodicGimplR, InterleavedIntegrator>;
+using PlaqObs = PlaquetteMod<HMCWrapper::ImplPolicy>;
+using Gimpl = PeriodicGimplD;
+using Serialiser = XmlReader;
+
+using StaggeredFermionOperator = ImprovedStaggeredFermionD;
+using FermionImplPolicy = StaggeredImplD;
+using FermionAction = StaggeredEvenEvenRational<FermionImplPolicy>;
+
+using StaggeredFermionOperatorF = ImprovedStaggeredFermionF;
+using FermionImplPolicyF = StaggeredImplF;
+
+//
+// MILC's combined light/strange/regulator pseudofermion
+//
+
+// det(Q_f)^(Flavors_f/4) by bare mass
+struct DeterminantFactor { RealD Mass; int Flavors; };
+
+MultiShiftFunction combinedRationalFunction(
+  const std::vector<DeterminantFactor>& factors,
+  const StaggeredRationalActionParams& params,
+  int invPow,
+  bool action,
+  bool inverse
+) {
+  const int degree = action ? params.action_degree : params.md_degree;
+  const RealD tolerance = action ? params.action_tolerance : params.md_tolerance;
+  std::vector<MultiShiftFunction> parts;
+  std::vector<std::pair<RealD, RealD>> terms; // (pole, residue)
+  RealD norm = 1.0;
+
+  for (const auto& factor : factors) {
+    const RealD shift = 4.0*factor.Mass*factor.Mass;
+    const int power = inverse ? -factor.Flavors : factor.Flavors;
+
+    std::cout << GridLogMessage
+              << "Generating degree " << degree << " approximation for (x+" << shift
+              << ")^(" << power << "/" << invPow << ")" << std::endl;
+
+    AlgRemez remez(params.lo + shift, params.hi + shift, params.precision);
+    const double error = remez.generateApprox(degree, std::abs(factor.Flavors), invPow);
+
+    if (error > tolerance) {
+      std::cout << GridLogMessage
+                << "WARNING: Remez approximation has a larger error "
+                << error << " than the CG tolerance " << tolerance
+                << "! Try increasing the number of poles" << std::endl;
+    }
+
+    parts.emplace_back(remez, tolerance, power < 0);
+    norm *= parts.back().norm;
+    for (auto& pole : parts.back().poles) { pole += shift; }
+  }
+
+  for (int f = 0; f < parts.size(); ++f) {
+    for (int k = 0; k < parts[f].poles.size(); ++k) {
+      const RealD pole = parts[f].poles[k];
+      RealD residue = parts[f].residues[k];
+
+      for (int g = 0; g < parts.size(); ++g) { if (g != f) { residue *= parts[g].approx(-pole); } }
+
+      terms.push_back({pole, residue});
+    }
+  }
+
+  // ConjugateGradientMultiShift expects the smallest pole first.
+  std::sort(terms.begin(), terms.end());
+
+  MultiShiftFunction combined(terms.size(), params.lo, params.hi);
+
+  combined.order = terms.size();
+  combined.norm = norm;
+  for (int i = 0; i < terms.size(); ++i) {
+    combined.poles[i] = terms[i].first;
+    combined.residues[i] = terms[i].second;
+    combined.tolerances[i] = tolerance;
+  }
+
+  return combined;
+}
+
+//
+// deferred smearing
+//
+
+// Record each field's cotangents so their sum shares one HISQ pullback.
+class DeferredPullback: public ConfigurationBase<HMCWrapper::Field> {
+public:
+  typedef HMCWrapper::Field Field;
+
+private:
+  ConfigurationBase<Field>& _links;
+  mutable PrimalCotangentPairs<Field> _pending;
+
+public:
+  explicit DeferredPullback(ConfigurationBase<Field>& links): _links(links) {}
+
+public:
+  PrimalCotangentPairs<Field>& pending() { return _pending; }
+
+public:
+  Primal<Field> primal(std::size_t id) const override { return _links.primal(id); }
+  const Field& fundamental() const override { return _links.fundamental(); }
+  const Field resolve(std::size_t id) const override { return _links.resolve(id); }
+
+public:
+  void smear() override { _links.smear(); }
+  void set_Field(Field& U) override { _links.set_Field(U); }
+  Field& get_SmearedU() override { return _links.get_SmearedU(); }
+  Field& get_U(bool smeared = false) override { return _links.get_U(smeared); }
+
+public:
+  void pullback(Field& UdSdU, PrimalCotangentPairs<Field>& dSdU) const override
+  { _pending += std::move(dSdU); UdSdU = Zero(); }
+
+  void smeared_force(Field& UdSdU) override { _links.smeared_force(UdSdU); }
+};
+
+//
+// pseudofermion container
+//
+
+class HISQPseudoFermions: public Action<HMCWrapper::Field> {
+public:
+  typedef HMCWrapper::Field Field;
+
+private:
+  std::vector<Action<Field>*> _fields;
+
+public:
+  std::string action_name() override { return "HISQPseudoFermions"; }
+
+  std::string LogParameters() override {
+    std::string parameters;
+    for (auto* field : _fields) { parameters += field->LogParameters(); }
+    return parameters;
+  }
+
+public:
+  void push_back(Action<Field>* field) {
+    GRID_ASSERT(field->hasOptedIn() && "fields must use the HISQ link interface (signContract)");
+    _fields.push_back(field);
+  }
+
+private:
+  RealD sum(ConfigurationBase<Field>& U, bool initial) {
+    RealD total = 0.0;
+
+    for (int i = 0; i < _fields.size(); ++i) {
+      const RealD term = initial ? _fields[i]->Sinitial(U) : _fields[i]->S(U);
+
+      std::cout << GridLogMessage << action_name() << " field " << i << " S = " << term << std::endl;
+      total += term;
+    }
+
+    return total;
+  }
+
+public:
+  void refresh(const Field&, GridSerialRNG&, GridParallelRNG&) override
+  { GRID_ASSERT(0 && "HISQPseudoFermions needs the HISQ configuration"); }
+
+  void refresh(ConfigurationBase<Field>& U, GridSerialRNG& sRNG, GridParallelRNG& pRNG) override
+  { for (auto* field : _fields) { field->refresh(U, sRNG, pRNG); } }
+
+public:
+  using Action<Field>::Sinitial;
+  RealD Sinitial(ConfigurationBase<Field>& U) override { return sum(U, true); }
+
+  RealD S(const Field&) override
+  { GRID_ASSERT(0 && "HISQPseudoFermions needs the HISQ configuration"); return 0.0; }
+
+  RealD S(ConfigurationBase<Field>& U) override { return sum(U, false); }
+
+public:
+  void deriv(const Field&, Field&) override
+  { GRID_ASSERT(0 && "HISQPseudoFermions needs the HISQ configuration"); }
+
+  void deriv(ConfigurationBase<Field>& U, Field& UdSdU) override {
+    DeferredPullback deferred(U);
+    Field zero(UdSdU.Grid());
+    for (auto* field : _fields) { field->deriv(deferred, zero); }
+    U.pullback(UdSdU, deferred.pending());
+  }
+};
+
+//
+// mixed-precision multishift solves
+//
+
+// Each heatbath, action, and force solve selects double or mixed precision.
+// Grid's mixed solver refines each shift against the double-precision residual.
+class MixedPrecisionFermionAction: public FermionAction {
+private:
+  typedef StaggeredFermionOperatorF::FermionField FermionFieldF;
+  typedef StaggeredFermionOperatorF::GaugeField GaugeFieldF;
+
+  StaggeredFermionOperator& _op;
+  StaggeredFermionOperatorF* _opF; // null: double precision throughout
+  std::array<bool, 3> _mixed;      // by SolveRole: heatbath, action, force
+  Primals<GaugeField> _links;     // three-hop and one-hop HISQ links
+
+public:
+  MixedPrecisionFermionAction(
+    StaggeredFermionOperator& op,
+    StaggeredFermionOperatorF* opF,
+    const std::array<bool, 3>& mixed,
+    const StaggeredRationalActionParams& params,
+    const MultiShiftFunction& heatBath,
+    const MultiShiftFunction& action,
+    const MultiShiftFunction& deriv
+  ): FermionAction(op, params, heatBath, action, deriv),
+    _op(op),
+    _opF(opF),
+    _mixed(mixed) {
+    GRID_ASSERT(
+      (opF || !(mixed[0] || mixed[1] || mixed[2])) &&
+      "mixed precision needs a single-precision operator"
+    );
+  }
+
+public:
+  void signContract(Primals<GaugeField> primals)
+  { FermionAction::signContract(primals); _links = std::move(primals); }
+
+private:
+  bool _isMixed(SolveRole role) const { return _opF && _mixed[static_cast<int>(role)]; }
+
+  void _importSinglePrecision() {
+    GaugeFieldF threeHop(_opF->GaugeGrid()), oneHop(_opF->GaugeGrid());
+    precisionChange(threeHop, _links[0].resolve());
+    precisionChange(oneHop, _links[1].resolve());
+    _opF->ImportGauge(threeHop, oneHop);
+  }
+
+protected:
+  void _multiShiftSolve(
+    SolveRole role,
+    int maxIter,
+    const MultiShiftFunction& approx,
+    const FermionField& in,
+    std::vector<FermionField>& outs
+  ) override {
+    if (!_isMixed(role)) { FermionAction::_multiShiftSolve(role, maxIter, approx, in, outs); return; }
+
+    _importSinglePrecision();
+
+    SchurStaggeredOperator<FermionOperator<FermionImplPolicy>, FermionField> MdagM(_op);
+    SchurStaggeredOperator<FermionOperator<FermionImplPolicyF>, FermionFieldF> MdagMF(*_opF);
+    ConjugateGradientMultiShiftMixedPrecCleanup<FermionField, FermionFieldF> solver(
+      maxIter, approx, _opF->FermionRedBlackGrid(), MdagMF, 1 // reliable-update frequency: unused
+    );
+
+    for (auto& out : outs) { out.Checkerboard() = in.Checkerboard(); }
+    solver(MdagM, in, outs);
+  }
+
+  void _multiShiftSolve(
+    SolveRole role,
+    int maxIter,
+    const MultiShiftFunction& approx,
+    const FermionField& in,
+    FermionField& out
+  ) override {
+    if (!_isMixed(role)) { FermionAction::_multiShiftSolve(role, maxIter, approx, in, out); return; }
+
+    std::vector<FermionField> outs(approx.poles.size(), in.Grid());
+
+    _importSinglePrecision();
+
+    SchurStaggeredOperator<FermionOperator<FermionImplPolicy>, FermionField> MdagM(_op);
+    SchurStaggeredOperator<FermionOperator<FermionImplPolicyF>, FermionFieldF> MdagMF(*_opF);
+    ConjugateGradientMultiShiftMixedPrecCleanup<FermionField, FermionFieldF> solver(
+      maxIter, approx, _opF->FermionRedBlackGrid(), MdagMF, 1 // reliable-update frequency: unused
+    );
+
+    for (auto& field : outs) { field.Checkerboard() = in.Checkerboard(); }
+    out.Checkerboard() = in.Checkerboard();
+    solver(MdagM, in, outs, out);
+  }
+};
+
+//
+// measurements
+//
+
+struct ChiralCondensateParameters: Serializable {
+  GRID_SERIALIZABLE_CLASS_MEMBERS(
+    ChiralCondensateParameters,
+    double, Mass,
+    double, NaikEpsilon,
+    double, StoppingCondition,
+    int, MaxIterations
+  );
+};
+
+// After the warmups, measure every Interval trajectories, with Sources draws
+// for each condensate mass in input order.
+struct MeasurementSpec {
+  int Warmups = 0;
+  int Interval = 1;
+  int Sources = 1;
+  std::vector<ChiralCondensateParameters> Condensates;
+};
+
+class Measurements: public HmcObservable<HMCWrapper::Field> {
+public:
+  typedef HMCWrapper::ImplPolicy GaugeImpl;
+  typedef GaugeImpl::Field GaugeField;
+  typedef GaugeImpl::LinkField GaugeLinkField;
+  typedef GaugeImpl::ComplexField ComplexField;
+  typedef StaggeredFermionOperator::FermionField FermionField;
+
+private:
+  const MeasurementSpec _spec;
+  const int _warmupsEnd;
+  std::deque<StaggeredFermionOperator> _operators;
+  std::vector<ActionContract<GaugeField>> _contracts;
+
+public:
+  Measurements(
+    const MeasurementSpec& spec,
+    const HMCparameters& hmc,
+    HISQConfiguration<GaugeImpl>& links,
+    GridCartesian* grid,
+    GridRedBlackCartesian* rbGrid,
+    const StaggeredFermionOperator::ImplParams& params
+  ): _spec(spec),
+    _warmupsEnd(hmc.StartTrajectory + hmc.NoMetropolisUntil + spec.Warmups) {
+    GRID_ASSERT(spec.Interval > 0 && spec.Sources > 0);
+
+    for (const auto& condensate : spec.Condensates) {
+      GRID_ASSERT(condensate.MaxIterations > 0 && "pbp solves need an iteration limit");
+
+      // Restore the mass term: M = 2m + D, as in MILC.
+      _operators.emplace_back(
+        *grid, *rbGrid, 2.0*condensate.Mass, 2.0,
+        -(1.0 + condensate.NaikEpsilon)/12.0, 1.0, params
+      );
+      _contracts.emplace_back(_operators.back().identity(), links.promise(condensate.NaikEpsilon));
+    }
+  }
+
+private: // gauge observables
+  void _gauge(const GaugeField& U) const {
+    GridBase* grid = U.Grid();
+    const RealD volume = grid->gSites();
+    std::vector<GaugeLinkField> link(Nd, GaugeLinkField(grid));
+    ComplexField plaquette(grid);
+    RealD spatial = 0.0, temporal = 0.0;
+
+    for (int mu = 0; mu < Nd; ++mu) { link[mu] = PeekIndex<LorentzIndex>(U, mu); }
+
+    // KS phases out: Re tr per plane, equal to 3 for unit links.
+    for (int mu = 1; mu < Nd; ++mu) {
+      for (int nu = 0; nu < mu; ++nu) {
+        WilsonLoops<GaugeImpl>::traceDirPlaquette(plaquette, link, mu, nu);
+        (mu == Tdir ? temporal : spatial) += real(TensorRemove(sum(plaquette)));
+      }
+    }
+
+    // Each time slice repeats the spatial sum, so the 4D average is MILC's.
+    GaugeLinkField loop = link[Tdir];
+
+    for (int t = 1; t < grid->GlobalDimensions()[Tdir]; ++t)
+    { loop = GaugeImpl::CovShiftForward(link[Tdir], Tdir, loop); }
+
+    const ComplexD polyakov = TensorRemove(sum(trace(loop)))/volume;
+
+    std::cout << GridLogMessage << "Plaquette: spatial = " << spatial/(3.0*volume)
+              << " temporal = " << temporal/(3.0*volume) << std::endl;
+    std::cout << GridLogMessage << "Polyakov loop = " << polyakov << std::endl;
+  }
+
+private: // chiral condensates and fermion actions
+  void _condensate(
+    const ChiralCondensateParameters& parameters,
+    StaggeredFermionOperator& op,
+    GridParallelRNG& pRNG
+  ) const {
+    GridBase* grid = op.FermionGrid();
+    GridBase* rbGrid = op.FermionRedBlackGrid();
+    const RealD volume = grid->gSites();
+    RealD even, odd, action;
+    FermionField source(grid), image(grid), solution(grid);
+    FermionField left(rbGrid), right(rbGrid);
+    ConjugateGradient<FermionField> CG(parameters.StoppingCondition, parameters.MaxIterations, false);
+    SchurRedBlackStaggeredSolve<FermionField> solve(CG);
+
+    for (int rep = 0; rep < _spec.Sources; ++rep) {
+      gaussian(pRNG, source);
+      source *= std::sqrt(0.5); // MILC's exp(-x^2) per component
+      op.Mdag(source, image);   // M^dag eta = 2m eta - D eta
+      solution = Zero();
+      solve(op, source, solution);
+
+      pickCheckerboard(Even, left, source);
+      pickCheckerboard(Even, right, solution);
+      even = real(innerProduct(left, right));
+
+      pickCheckerboard(Even, left, image);
+      action = real(innerProduct(left, right));
+
+      pickCheckerboard(Odd, left, source);
+      pickCheckerboard(Odd, right, solution);
+      odd = real(innerProduct(left, right));
+
+      std::cout << GridLogMessage << "Chiral condensate: mass = " << parameters.Mass
+                << " even = " << 2.0*even/volume
+                << " odd = " << 2.0*odd/volume
+                << " source = " << rep + 1 << "/" << _spec.Sources << std::endl;
+      std::cout << GridLogMessage << "Fermion action: mass = " << parameters.Mass
+                << " value = " << action/volume << std::endl;
+    }
+  }
+
+public:
+  // Grid passes the completed trajectory. MILC counts measurement trajectories
+  // from zero and measures at traj_done % interval == interval - 1.
+  void TrajectoryComplete(
+    int traj,
+    ConfigurationBase<GaugeField>& links,
+    GridSerialRNG& sRNG,
+    GridParallelRNG& pRNG
+  ) override {
+    const int measuring = traj - _warmupsEnd;
+
+    if (measuring <= 0 || measuring % _spec.Interval != 0) { return; }
+
+    _gauge(links.get_U(false));
+    for (int i = 0; i < _operators.size(); ++i) {
+      _operators[i].ImportGauge(_contracts[i]);
+      _condensate(_spec.Condensates[i], _operators[i], pRNG);
+    }
+  }
+
+  void TrajectoryComplete(int, GaugeField&, GridSerialRNG&, GridParallelRNG&) override
+  { GRID_ASSERT(0 && "MILC measurements need the HISQ configuration"); }
+};
+
+// AddObservable owns this module and its observable.
+class MeasurementModule: public HMCModuleBase<HmcObservable<HMCWrapper::Field>> {
+private:
+  Measurements _measurements;
+
+public:
+  template<class... Args>
+  explicit MeasurementModule(Args&&... args): _measurements(std::forward<Args>(args)...) {}
+
+public:
+  HmcObservable<HMCWrapper::Field>* getPtr() override { return &_measurements; }
+};
+
+//
+// MILC input and rational-function I/O
+//
+
+// MILC decks use key/value records in a fixed order; # starts a comment.
+class MILCReader {
+private:
+  std::vector<std::string> _tokens;
+  size_t _pos = 0;
+
+public:
+  MILCReader(const std::string& file) {
+    std::ifstream in(file);
+    std::string line;
+
+    std::cout << GridLogMessage << "Reading MILC input " << file << std::endl;
+    GRID_ASSERT(in.is_open() && "cannot open MILC input");
+
+    while (std::getline(in, line)) {
+      std::istringstream words(line.substr(0, line.find('#')));
+      std::string token;
+
+      while (words >> token) { _tokens.push_back(token); }
+    }
+  }
+
+public:
+  std::string peek() const { return _pos < _tokens.size() ? _tokens[_pos] : ""; }
+
+  std::string word() {
+    GRID_ASSERT(_pos < _tokens.size() && "unexpected end of MILC input");
+    return _tokens[_pos++];
+  }
+
+  void expect(const std::string& key) {
+    const std::string got = word();
+    if (got != key) { std::cout << GridLogError << "expected " << key << ", got " << got << std::endl; GRID_ASSERT(0); }
+  }
+
+public:
+  int integer(const std::string& key) { expect(key); return std::stoi(word()); }
+  RealD real(const std::string& key) { expect(key); return std::stod(word()); }
+
+  std::vector<RealD> reals(const std::string& key, int n) {
+    std::vector<RealD> values;
+    expect(key);
+    for (int i = 0; i < n; ++i) { values.push_back(std::stod(word())); }
+    return values;
+  }
+};
+
+// Read res[0] + sum_k res[k]/(x + pole[k]), with a dummy pole[0]. MILC's
+// x = -D^2 on even sites; y, z, and m describe prod_k (x + 4m_k^2)^(y_k/z_k).
+MultiShiftFunction readMILCFunction(MILCReader& in, const std::string& tag, RealD tolerance) {
+  in.reals("y_" + tag, 4);
+  in.reals("z_" + tag, 4);
+  in.reals("m_" + tag, 4);
+
+  const int order = in.integer("order_" + tag);
+  MultiShiftFunction function(order, 0.0, 0.0);
+
+  function.order = order;
+  function.norm = in.real("res_" + tag);
+  for (auto& residue : function.residues) { residue = in.real("res_" + tag); }
+
+  in.real("pole_" + tag);
+  for (auto& pole : function.poles) { pole = in.real("pole_" + tag); }
+
+  function.tolerances.assign(order, tolerance);
+  return function;
+}
+
+//
+// input parameters
+//
+
+#define GRID_SERIALIZABLE(StructName, ...)                                        \
+  struct StructName: Serializable {                                               \
+    GRID_SERIALIZABLE_CLASS_MEMBERS(StructName, __VA_ARGS__);                     \
+    template <class ReaderClass>                                                  \
+    StructName(Reader<ReaderClass>& Reader) { read(Reader, #StructName, *this); } \
+  };
+
+GRID_SERIALIZABLE(InitializationParameters, std::string, StartType);
+
+GRID_SERIALIZABLE(
+  CheckpointParameters,
+  std::string, Format,
+  std::string, ConfigurationPrefix,
+  std::string, RandomNumberGeneratorPrefix,
+  int, SaveInterval
+);
+
+GRID_SERIALIZABLE(
+  RandomNumberGeneratorParameters,
+  std::string, SerialSeeds,
+  std::string, ParallelSeeds
+);
+
+GRID_SERIALIZABLE(
+  HamiltonianMonteCarloParameters,
+  int, NoMetropolisUntil,
+
+  double, TrajectoryLength,
+  int, MolecularDynamicsSteps,
+
+  int, FermionActionStepMultiplicity,
+  int, GaugeActionStepMultiplicity
+);
+
+GRID_SERIALIZABLE(
+  ActionParameters,
+  double, BareGaugeCoupling,
+  double, TadpoleFactor,
+  double, LightFermionMass,
+  double, StrangeFermionMass,
+  double, CharmFermionMass,
+  double, RegulatorFermionMass
+);
+
+GRID_SERIALIZABLE(
+  ConjugateGradientParameters,
+  double, ActionStoppingCondition,
+  double, ForceStoppingCondition,
+  int, MaxIterations
+);
+
+// MILC rationals file: lambda_low/lambda_high bound -D^2 for every pseudofermion;
+// each pseudofermion has its own order_MD (force) and order_GR = order_FA (heatbath, action)
+GRID_SERIALIZABLE(
+  RationalApproximationParameters,
+  double, LambdaLow,
+  double, LambdaHigh,
+  int, Precision,
+  int, LightStrangeActionDegree,
+  int, LightStrangeForceDegree,
+  int, RegulatorActionDegree,
+  int, RegulatorForceDegree,
+  int, CharmActionDegree,
+  int, CharmForceDegree
+);
+
+#undef GRID_SERIALIZABLE
+
+struct MeasurementParameters: Serializable {
+  GRID_SERIALIZABLE_CLASS_MEMBERS(
+    MeasurementParameters,
+    int, TrajectoriesBetweenMeasurements,
+    int, ChiralCondensateSources,
+    std::vector<ChiralCondensateParameters>, ChiralCondensate
+  );
+};
+
+// Optional: without it the multishift solves are in mixed precision
+struct MixedPrecisionParameters: Serializable {
+  GRID_SERIALIZABLE_CLASS_MEMBERS(
+    MixedPrecisionParameters,
+    bool, Enabled
+  );
+};
+
+// One pseudofermion: the Naik epsilon of its operator and its three rational functions of
+// -D^2, generated from the Remez settings in Params (XML) or read from MILC's rationals file
+struct FieldSpec {
+  RealD NaikEpsilon;
+  StaggeredRationalActionParams Params;
+  MultiShiftFunction HeatBath;
+  MultiShiftFunction Action;
+  MultiShiftFunction Deriv;
+  std::array<bool, 3> Mixed = {true, true, true}; // mixed precision by SolveRole: GR, FA, MD
+};
+
+struct Deck {
+  HMCparameters HMC;
+  CheckpointerParameters Checkpoint;
+  bool ILDGCheckpoint = false;        // else Nersc
+  RNGModuleParameters RNG;
+  int FermionStepMultiplicity;
+  int GaugeStepMultiplicity;
+  RealD BareGaugeCoupling;
+  RealD TadpoleFactor;
+  int SeaFlavors;                     // MILC's total_dyn_flavors in the one-loop coefficients
+  std::vector<FieldSpec> Fields;
+  MeasurementSpec Measurements;
+};
+
+//
+// XML input deck
+//
+
+Deck readXMLDeck(const std::string& file) {
+  Serialiser Reader(file, false, "grid");
+
+  InitializationParameters Initialization(Reader);
+  HamiltonianMonteCarloParameters HamiltonianMonteCarlo(Reader);
+  ActionParameters Action(Reader);
+  CheckpointParameters Checkpoint(Reader);
+  RandomNumberGeneratorParameters RandomNumberGenerator(Reader);
+  ConjugateGradientParameters CGParams(Reader);
+  RationalApproximationParameters RationalParams(Reader);
+
+  MeasurementParameters Measurement;
+  MixedPrecisionParameters MixedPrecision;
+  Deck deck;
+  const RealD ml = Action.LightFermionMass;
+  const RealD ms = Action.StrangeFermionMass;
+  const RealD mr = Action.RegulatorFermionMass;
+  const RealD mc = Action.CharmFermionMass;
+
+  // HMC, checkpoint, and RNG settings
+  deck.HMC.MD.MDsteps = HamiltonianMonteCarlo.MolecularDynamicsSteps;
+  deck.HMC.MD.trajL = HamiltonianMonteCarlo.TrajectoryLength;
+  deck.HMC.NoMetropolisUntil = HamiltonianMonteCarlo.NoMetropolisUntil;
+  deck.HMC.StartingType = Initialization.StartType;
+  deck.Checkpoint.config_prefix = Checkpoint.ConfigurationPrefix;
+  deck.Checkpoint.rng_prefix = Checkpoint.RandomNumberGeneratorPrefix;
+  deck.Checkpoint.saveInterval = Checkpoint.SaveInterval;
+  deck.Checkpoint.format = Checkpoint.Format;
+  deck.RNG.serial_seeds = RandomNumberGenerator.SerialSeeds;
+  deck.RNG.parallel_seeds = RandomNumberGenerator.ParallelSeeds;
+  deck.FermionStepMultiplicity = HamiltonianMonteCarlo.FermionActionStepMultiplicity;
+  deck.GaugeStepMultiplicity = HamiltonianMonteCarlo.GaugeActionStepMultiplicity;
+  deck.BareGaugeCoupling = Action.BareGaugeCoupling;
+  deck.TadpoleFactor = Action.TadpoleFactor;
+
+  // Grid's thermalization (NoMetropolisUntil) plays MILC's warms: the HMC skips it
+  Measurement.TrajectoriesBetweenMeasurements = 1;
+  Measurement.ChiralCondensateSources = 1;
+  read(Reader, "MeasurementParameters", Measurement);
+  deck.Measurements.Interval = Measurement.TrajectoriesBetweenMeasurements;
+  deck.Measurements.Sources = Measurement.ChiralCondensateSources;
+  deck.Measurements.Condensates = std::move(Measurement.ChiralCondensate);
+
+  // Mixed-precision multishift solves unless disabled; false solves in double precision
+  MixedPrecision.Enabled = true;
+  read(Reader, "MixedPrecisionParameters", MixedPrecision);
+
+  // MILC's rationals file: bounds [lambda_low, lambda_high] on -D^2 for every pseudofermion,
+  // order_MD for the force and order_GR = order_FA for heatbath and action.
+  auto makeField = [&](
+    RealD epsilon,
+    const std::vector<DeterminantFactor>& factors,
+    int actionDegree,
+    int forceDegree
+  ) {
+    const StaggeredRationalActionParams params(
+      factors[0].Flavors,
+      RationalParams.LambdaLow,
+      RationalParams.LambdaHigh,
+      CGParams.MaxIterations,
+      CGParams.ActionStoppingCondition,
+      actionDegree,
+      CGParams.ForceStoppingCondition,
+      forceDegree,
+      RationalParams.Precision,
+      0
+    );
+    return FieldSpec{
+      epsilon, params,
+      combinedRationalFunction(factors, params, 8, true, false), // heatbath, R^(-1/2)
+      combinedRationalFunction(factors, params, 8, true, true),  // action, R^(1/2), as MILC's FA
+      combinedRationalFunction(factors, params, 4, false, true)  // force, R
+    };
+  };
+
+  // Five pseudofermions as in MILC's in.m013m065m838 / rationals.sample.su3_rhmc_hisq_f211:
+  //   1    det(Q_l)^(2/4) det(Q_s)^(1/4) det(Q_r)^(-3/4), one rational function of -D^2
+  //   2-4  det(Q_r)^(1/4) each, cancelling the regulator denominator
+  //   5    det(Q_c)^(1/4) on the Naik-epsilon links (Eq. A6 uses the bare charm mass)
+  const FieldSpec lightStrange = makeField(
+    0.0, {{ml, 2}, {ms, 1}, {mr, -3}},
+    RationalParams.LightStrangeActionDegree, RationalParams.LightStrangeForceDegree
+  );
+  const FieldSpec regulator = makeField(
+    0.0, {{mr, 1}}, RationalParams.RegulatorActionDegree, RationalParams.RegulatorForceDegree
+  );
+  const FieldSpec charm = makeField(
+    calcNaikEpsilon(mc), {{mc, 1}},
+    RationalParams.CharmActionDegree, RationalParams.CharmForceDegree
+  );
+  deck.Fields = {lightStrange, regulator, regulator, regulator, charm};
+  for (auto& spec : deck.Fields) { spec.Mixed.fill(MixedPrecision.Enabled); }
+
+  // MILC's total_dyn_flavors: the sea quarks l, s, c; the regulator determinants cancel.
+  deck.SeaFlavors = 2 + 1 + 1;
+  return deck;
+}
+
+//
+// MILC input deck
+//
+
+Deck readMILCDeck(const std::string& file) {
+  MILCReader in(file);
+  Deck deck;
+  Coordinate lattice;
+  std::string rationals, prefix, start, save;
+  int seed, nPseudo, nDyn, milcSteps, nPbp, maxIterations = 0;
+  RealD timeStep;
+
+  // Geometry and RNG seeds
+
+  in.integer("prompt");
+  lattice = Coordinate(
+    {in.integer("nx"), in.integer("ny"), in.integer("nz"), in.integer("nt")}
+  );
+  GRID_ASSERT(lattice == GridDefaultLatt() && "--grid must match nx ny nz nt");
+  if (in.peek() == "node_geometry") { in.reals("node_geometry", 4); }
+  if (in.peek() == "ionode_geometry") { in.reals("ionode_geometry", 4); }
+  seed = in.integer("iseed");
+  deck.RNG.parallel_seeds = std::to_string(seed);   // MILC rng: iseed, serial {iseed, volume}
+  deck.RNG.serial_seeds = std::to_string(seed) + " " + std::to_string(
+    lattice[0] * lattice[1] * lattice[2] * lattice[3]
+  );
+  nPseudo = in.integer("n_pseudo");
+  in.expect("load_rhmc_params");
+  rationals = in.word();
+  // Gauge action and sea flavors
+  deck.BareGaugeCoupling = in.real("beta");
+  nDyn = in.integer("n_dyn_masses");
+  in.reals("dyn_mass", nDyn);
+  deck.SeaFlavors = 0;
+  for (RealD flavors : in.reals("dyn_flavors", nDyn)) { deck.SeaFlavors += flavors; }
+  deck.TadpoleFactor = in.real("u0");
+  // Trajectory lengths, step counts, and measurement cadence
+  deck.Measurements.Warmups = in.integer("warms");  // measurements follow the warms
+  deck.HMC.Trajectories = deck.Measurements.Warmups + in.integer("trajecs");
+  deck.HMC.NoMetropolisUntil = 0;                 // MILC's warms are Metropolis trajectories
+  deck.Measurements.Interval = in.integer("traj_between_meas");
+  timeStep = in.real("microcanonical_time_step");
+  milcSteps = in.integer("steps_per_trajectory");
+  GRID_ASSERT(milcSteps % 2 == 0 && "MILC 3G1F requires an even number of steps");
+  deck.HMC.MD.MDsteps = milcSteps / 2;              // complete Omelyan periods
+  deck.HMC.MD.trajL = timeStep * milcSteps;
+  deck.FermionStepMultiplicity = 1;                 // MILC's INT_3G1F
+  deck.GaugeStepMultiplicity = 3;
+
+  // the rationals file, relative to the working directory as in MILC, else to the deck
+  if (!std::ifstream(rationals) && file.rfind('/') != std::string::npos) {
+    rationals = file.substr(0, file.rfind('/') + 1) + rationals;
+  }
+  MILCReader rat(rationals);
+  GRID_ASSERT(rat.integer("n_pseudo") == nPseudo && "n_pseudo differs from rationals file");
+  for (int i = 0; i < nPseudo; ++i) {
+    // md, fa, gr: relative residuals
+    const std::vector<RealD> residual = in.reals("cgresid_md_fa_gr", 3);
+    const std::vector<RealD> iterations = in.reals("max_multicg_md_fa_gr", 3);
+    // MILC's precisions: 1 (single, refined in double) solves in mixed precision, 2 in double
+    const std::vector<RealD> precision = in.reals("cgprec_md_fa_gr", 3);
+    for (RealD p : precision) { GRID_ASSERT((p == 1 || p == 2) && "cgprec_md_fa_gr must be 1 or 2"); }
+
+    FieldSpec field;
+    field.NaikEpsilon = rat.real("naik_term_epsilon");
+    // R = prod_f Q_f^(-Flavors_f/4): MD force; FA applies R^(1/2).
+    field.Deriv = readMILCFunction(rat, "MD", residual[0]);
+    field.HeatBath = readMILCFunction(rat, "GR", residual[2]); // R^(-1/2): heatbath
+    field.Action = readMILCFunction(rat, "FA", residual[1]);
+    field.Mixed = {precision[2] == 1, precision[1] == 1, precision[0] == 1}; // GR, FA, MD
+    field.Params = StaggeredRationalActionParams(
+      0,                                              // nf, lo, hi: logging only
+      0.0,
+      0.0,
+      std::max({iterations[0], iterations[1], iterations[2]}),
+      residual[1],
+      field.Action.order,
+      residual[0],
+      field.Deriv.order,
+      0,
+      0
+    );
+    deck.Fields.push_back(std::move(field));
+  }
+
+  // Condensate solves
+  in.integer("prec_ff");
+  nPbp = in.integer("number_of_pbp_masses");
+  if (nPbp > 0) {
+    maxIterations = in.integer("max_cg_prop");      // per restart
+    maxIterations *= in.integer("max_cg_prop_restarts");
+    deck.Measurements.Sources = in.integer("npbp_reps");
+    in.integer("prec_pbp");                         // double precision throughout
+  }
+  for (int i = 0; i < nPbp; ++i) {
+    ChiralCondensateParameters condensate;
+    condensate.Mass = in.real("mass");
+    condensate.NaikEpsilon = in.real("naik_term_epsilon");
+    condensate.StoppingCondition = in.real("error_for_propagator");
+    condensate.MaxIterations = maxIterations;
+    if (in.real("rel_error_for_propagator") != 0.0) {
+      std::cout << GridLogWarning << "rel_error_for_propagator is not supported; "
+                << "pbp solves stop on error_for_propagator alone" << std::endl;
+    }
+    deck.Measurements.Condensates.push_back(condensate);
+  }
+
+  // Grid's checkpointer names lattices <prefix>.<trajectory>; a reloaded lattice must follow
+  // that, Grid cannot read MILC's native format (ILDG and SciDAC files are read by name)
+  auto ildg = [](const std::string& name) {
+    return name.find("ildg") != std::string::npos || name.find("scidac") != std::string::npos;
+  };
+
+  const std::regex trajectory("\\.([0-9]+)$");
+  start = in.word();
+  if (start == "fresh") { deck.HMC.StartingType = "ColdStart"; }
+  else if (start == "warm") { deck.HMC.StartingType = "TepidStart"; }
+  else if (start.rfind("reload_", 0) == 0) {
+    const std::string name = in.word();
+    std::smatch match;
+    GRID_ASSERT(std::regex_search(name, match, trajectory) &&
+                "reload needs <prefix>.<trajectory>");
+    prefix = match.prefix();
+    deck.HMC.StartingType = "CheckpointStart";
+    deck.HMC.StartTrajectory = std::stoi(match[1]);
+    deck.ILDGCheckpoint = ildg(name);
+  } else { GRID_ASSERT(0 && "starting lattice command not supported"); }
+
+  save = in.word();
+  if (save == "forget") { deck.Checkpoint.saveInterval = std::numeric_limits<int>::max(); }
+  else if (save.rfind("save_", 0) == 0) {
+    // MILC continues as reload lat.100, save lat.110: Grid appends the trajectory itself
+    prefix = std::regex_replace(in.word(), trajectory, "");
+    deck.ILDGCheckpoint = ildg(save);
+  } else { GRID_ASSERT(0 && "saving lattice command not supported"); }
+
+  deck.Checkpoint.config_prefix = prefix;
+  deck.Checkpoint.rng_prefix = prefix + ".rng";
+  return deck;
+}
+
+//
+// main program
+//
+
+int main(int argc, char **argv) {
+  Grid_init(&argc, &argv);
+
+  //
+  // Input: --xml <file>, or --milc-input <deck> with MILC's input deck and rationals file
+  //
+
+  const bool milc = GridCmdOptionExists(argv, argv + argc, "--milc-input");
+  Deck deck = milc ? readMILCDeck(GridCmdOptionPayload(argv, argv + argc, "--milc-input"))
+                   : readXMLDeck(GridCmdOptionPayload(argv, argv + argc, "--xml"));
+
+  deck.HMC.MD.name = "InterleavedIntegrator";
+  HMCWrapper TheHMC(deck.HMC);
+
+  TheHMC.ReadCommandLine(argc, argv);
+  TheHMC.Resources.AddFourDimGrid("gauge");
+  if (deck.ILDGCheckpoint) { TheHMC.Resources.LoadILDGCheckpointer(deck.Checkpoint); }
+  else { TheHMC.Resources.LoadNerscCheckpointer(deck.Checkpoint); }
+  TheHMC.Resources.SetRNGSeeds(deck.RNG);
+
+  ActionLevel<HMCWrapper::Field> Level1(deck.FermionStepMultiplicity);
+  ActionLevel<HMCWrapper::Field> Level2(deck.GaugeStepMultiplicity);
+
+  //
+  // Grid setup
+  //
+
+  auto latt = GridDefaultLatt();
+  auto simd = GridDefaultSimd(Nd, vComplexD::Nsimd());
+  auto mpi = GridDefaultMpi();
+
+  auto GridPtr = TheHMC.Resources.GetCartesian();
+  auto GridRBPtr = TheHMC.Resources.GetRBCartesian();
+
+  auto GridPtrF = SpaceTimeGrid::makeFourDimGrid(latt, GridDefaultSimd(Nd, vComplexF::Nsimd()), mpi);
+  auto GridRBPtrF = SpaceTimeGrid::makeFourDimRedBlackGrid(GridPtrF);
+
+  //
+  // Fermion operators: one per Naik epsilon
+  //
+
+  std::vector<Complex> boundary = {1, 1, 1, -1};
+  StaggeredFermionOperator::ImplParams Params(boundary);
+  HISQConfiguration<HMCWrapper::ImplPolicy> HISQSmearingPolicy(GridPtr);
+
+  std::map<RealD, StaggeredFermionOperator> Operators;
+  std::map<RealD, StaggeredFermionOperatorF> OperatorsF;
+
+  //
+  // Fermion action
+  //
+
+  std::deque<MixedPrecisionFermionAction> Fields;
+  HISQPseudoFermions Fermions; // all fields share one HISQ pullback per force
+
+  for (const auto& spec : deck.Fields) {
+    RealD mass = 0.0; // masses get folded into rational functions
+    RealD epsilon = spec.NaikEpsilon;
+    RealD c1 = 2.0;                              // <-+- MILC convention: M = Dslash + 2m
+    RealD c2 = -(1.0 + spec.NaikEpsilon) / 12.0; // <-+
+    RealD u0 = 1.0;
+
+    StaggeredFermionOperator* Op = nullptr;
+    StaggeredFermionOperatorF* OpF = nullptr;
+    auto precision = [&](int role) { return spec.Mixed[role] ? "mixed" : "double"; };
+
+    Op = &Operators.try_emplace(epsilon, *GridPtr, *GridRBPtr, mass, c1, c2, u0, Params).first->second;
+    if (spec.Mixed[0] || spec.Mixed[1] || spec.Mixed[2])
+    { OpF = &OperatorsF.try_emplace(epsilon, *GridPtrF, *GridRBPtrF, mass, c1, c2, u0, Params).first->second; }
+
+    Fields.emplace_back(*Op, OpF, spec.Mixed, spec.Params, spec.HeatBath, spec.Action, spec.Deriv);
+    Fields.back().signContract(HISQSmearingPolicy.promise(spec.NaikEpsilon));
+    Fermions.push_back(&Fields.back());
+
+    std::cout << GridLogMessage
+              << "Pseudofermion "
+              << Fields.size() - 1
+              << " multishift solves: heatbath " << precision(0)
+              << ", action " << precision(1)
+              << ", force " << precision(2) << std::endl;
+  }
+
+  Level1.push_back(&Fermions);
+
+  //
+  // Gauge action
+  //
+
+  const RealD u0 = deck.TadpoleFactor;
+  const int nf = deck.SeaFlavors;
+
+  RealD beta = deck.BareGaugeCoupling;
+  RealD plaq = 1.0; // => beta = 10/g^2
+  RealD rect = oneLoopMILCRectangleCoefficient(u0, nf);
+  RealD para = oneLoopMILCParallelogramCoefficient(u0, nf);
+
+  PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction<Gimpl> GaugeAction(
+    GridPtr, beta, plaq, rect, para
+  );
+
+  Level2.push_back(&GaugeAction);
+
+  //
+  // Run HMC with HISQ smearing
+  //
+
+  TheHMC.TheAction.push_back(Level1);
+  TheHMC.TheAction.push_back(Level2);
+
+  HISQSmearingPolicy.setPerformanceReporting(GridLogPerformance.isActive());
+  TheHMC.Resources.AddObservable<PlaqObs>();
+  TheHMC.Resources.AddObservable<MeasurementModule>(
+    deck.Measurements, TheHMC.Parameters, HISQSmearingPolicy, GridPtr, GridRBPtr, Params
+  );
+
+  TheHMC.Run(HISQSmearingPolicy, [&](auto& md) {
+    for (int level = 0; level < md.levels; ++level) // it would be nice to better integrate this w/ level api
+    { md.schemes[level] = omelyan2(md.T, md.V[level], md.as[level].multiplier, 0.2); }
+    md.evolution.set_branches({&md.schemes[0], &md.schemes[1]});
+  });
+
+  Grid_finalize();
+}
+
+/* MILC input (pass as --milc-input <deck>, with --grid equal to nx ny nz nt): the ks_imp_rhmc deck
+   of su3_rhmc_hisq (ks_imp_rhmc/test/su3_rhmc_hisq.f211.1.sample-in) and the rationals file it
+   names in load_rhmc_params. Each pseudofermion uses the massless operator with the
+   naik_term_epsilon of the file; GR is the heatbath, MD the force, and FA the
+   half-power used to evaluate the action as |FA Phi|^2; cgresid_md_fa_gr are the
+   relative residuals of the multishift solves, max_multicg_md_fa_gr their iteration limits;
+   warms + trajecs trajectories with the Metropolis test throughout; MILC's
+   steps_per_trajectory/2 complete Omelyan periods of 2*microcanonical_time_step,
+   lambda = 0.2, and independent fermion/gauge multiplicities 1 and 3. XML counts
+   complete periods directly; TrajectoryLength/MolecularDynamicsSteps is their length;
+   iseed seeds the MILC rng (serial {iseed, volume}); dyn_flavors give the one-loop gauge
+   coefficients. fresh is ColdStart, warm TepidStart; reload_* needs a lattice named
+   <prefix>.<trajectory> that Grid's checkpointer can read (the ILDG checkpointer for names
+   containing ildg or scidac, MILC's native format cannot be read); save_* writes Grid's
+   checkpoints every trajectory under the given name, less any .<trajectory> ending, forget
+   writes nothing. One checkpointer both reads and writes, so a continuation keeps its prefix
+   (reload_serial lat.100, save_serial lat.110). After the warms, every traj_between_meas
+   trajectories print PLAQ and P_LOOP and, for each pbp mass in order, npbp_reps Gaussian
+   sources on all sites give PBP and FACTION, drawn from the parallel rng after the trajectory
+   as in MILC; each mass solves 2m + D on its naik_term_epsilon links to error_for_propagator
+   in at most max_cg_prop * max_cg_prop_restarts iterations (a nonzero
+   rel_error_for_propagator is ignored with a warning). cgprec_md_fa_gr selects each
+   pseudofermion's MD, FA and GR multishift solves in mixed (1, MILC's single precision with
+   double-precision refinement) or double (2) precision; prec_ff and prec_pbp are read and
+   ignored (double precision); continue is not supported.
+*/
+
+/* Example XML input file (pass as --xml <xml-file-name>.xml):
+   The masses, beta, and u0 are the a ~ 0.12 fm physical-mass ensemble in
+   Table IV of Phys. Rev. D 87, 054505. The regulator mass is 0.2 as in
+   Phys. Rev. D 82, 074501. Step counts are examples, not a reproduction of a MILC
+   production input deck; check them before use. The rational bounds, the regulator and
+   charm orders and the rng seeds follow in.m013m065m838 (1e-15, 90, orders 7/9). The
+   combined field approximates each of its three factors separately at the given degree
+   (3 x degree poles); with 80 digits on [4 m_l^2, 90], its light factor's Remez error is
+   9e-10 for the heatbath and action power x^(2/8) at degree 20 and 9e-8 for the force power
+   x^(2/4) at degree 16. With --enable-rng=milc the parallel rng takes one seed and the serial rng
+   {seed, volume} (4096 below is 8^4). MeasurementParameters is optional (the gauge
+   observables every trajectory, no condensate): measurements begin after the
+   NoMetropolisUntil trajectories, and each ChiralCondensate elem is one MILC pbp mass.
+   MixedPrecisionParameters is optional (mixed precision); Enabled false solves in double
+   precision.
+<?xml version="1.0"?>
+<grid>
+  <InitializationParameters>
+    <StartType>TepidStart</StartType>
+  </InitializationParameters>
+  <HamiltonianMonteCarloParameters>
+    <NoMetropolisUntil>0</NoMetropolisUntil>
+    <TrajectoryLength>1.0</TrajectoryLength>
+    <MolecularDynamicsSteps>15</MolecularDynamicsSteps>
+    <FermionActionStepMultiplicity>1</FermionActionStepMultiplicity>
+    <GaugeActionStepMultiplicity>3</GaugeActionStepMultiplicity>
+  </HamiltonianMonteCarloParameters>
+  <ActionParameters>
+    <BareGaugeCoupling>6.0</BareGaugeCoupling>
+    <TadpoleFactor>0.86372</TadpoleFactor>
+    <LightFermionMass>0.00184</LightFermionMass>
+    <StrangeFermionMass>0.0507</StrangeFermionMass>
+    <CharmFermionMass>0.628</CharmFermionMass>
+    <RegulatorFermionMass>0.2</RegulatorFermionMass>
+  </ActionParameters>
+  <CheckpointParameters>
+    <Format>IEEE64BIG</Format>
+    <ConfigurationPrefix>ckpoint_hmc_lat</ConfigurationPrefix>
+    <RandomNumberGeneratorPrefix>ckpoint_hmc_rng</RandomNumberGeneratorPrefix>
+    <SaveInterval>1</SaveInterval>
+  </CheckpointParameters>
+  <RandomNumberGeneratorParameters>
+    <SerialSeeds>6 4096</SerialSeeds>
+    <ParallelSeeds>6</ParallelSeeds>
+  </RandomNumberGeneratorParameters>
+  <ConjugateGradientParameters>
+    <ActionStoppingCondition>1e-10</ActionStoppingCondition>
+    <ForceStoppingCondition>1e-8</ForceStoppingCondition>
+    <MaxIterations>10000</MaxIterations>
+  </ConjugateGradientParameters>
+  <RationalApproximationParameters>
+    <LambdaLow>1e-15</LambdaLow>
+    <LambdaHigh>90.0</LambdaHigh>
+    <Precision>80</Precision>
+    <LightStrangeActionDegree>20</LightStrangeActionDegree>
+    <LightStrangeForceDegree>16</LightStrangeForceDegree>
+    <RegulatorActionDegree>9</RegulatorActionDegree>
+    <RegulatorForceDegree>7</RegulatorForceDegree>
+    <CharmActionDegree>9</CharmActionDegree>
+    <CharmForceDegree>7</CharmForceDegree>
+  </RationalApproximationParameters>
+  <MixedPrecisionParameters>
+    <Enabled>true</Enabled>
+  </MixedPrecisionParameters>
+  <MeasurementParameters>
+    <TrajectoriesBetweenMeasurements>1</TrajectoriesBetweenMeasurements>
+    <ChiralCondensateSources>1</ChiralCondensateSources>
+    <ChiralCondensate>
+      <elem>
+        <Mass>0.00184</Mass>
+        <NaikEpsilon>0.0</NaikEpsilon>
+        <StoppingCondition>1e-8</StoppingCondition>
+        <MaxIterations>10000</MaxIterations>
+      </elem>
+    </ChiralCondensate>
+  </MeasurementParameters>
+</grid>
+*/
+
+/*
+Archived MILC-formatted output (inactive).
 
 // MILC's node0_printf format, kept verbatim by MILCOutput
 template <class... Args>
@@ -86,15 +1199,6 @@ public:
 };
 
 typedef HMCWrapperTemplate<MILCGaugeImpl, InterleavedIntegrator> HMCWrapper;
-typedef PlaquetteMod<HMCWrapper::ImplPolicy> PlaqObs;
-
-typedef ImprovedStaggeredFermionD StaggeredFermionOperator;
-typedef StaggeredImplD FermionImplPolicy;
-typedef StaggeredEvenEvenRational<FermionImplPolicy> FermionAction;
-
-typedef PeriodicGimplD Gimpl;
-
-typedef XmlReader Serialiser;
 
 ////////////////////////////////////////////////////////////////
 // MILC trajectory output, scoped to this driver's Run call
@@ -114,8 +1218,13 @@ class MILCPerformanceFormatter {
   // Solves are synchronous; keep the current solve until its elapsed-time record.
   struct Solve {
     int masses = 0, iterations = 0;
-    bool converged = false, reported = false;
+    bool converged = false, reported = false, mixed = false;
   } solve_;
+  // A mixed-precision multishift solve ends with its total time; its cleanup CGs (inner
+  // single-mass solves in between) are reported after it, like MILC's refinement solves.
+  bool mixedSolve_ = false;
+  int cleanupIterations_ = 0;
+  std::vector<std::pair<double, int>> cleanups_;
   std::string timerSection_;
   double gaugeActionFlops_ = 0.0, gaugeForceFlops_ = 0.0;
   double pendingGaugeSeconds_ = -1.0;
@@ -140,12 +1249,18 @@ class MILCPerformanceFormatter {
     const double flops = perSite * localVolume_ * solve_.iterations;
     out_ << std::scientific << std::setprecision(6) << "CONGRAD5:";
     if (seconds >= 0.0) out_ << " time = " << seconds;
-    out_ << " (Grid " << kind << " D) masses = " << solve_.masses
+    out_ << " (Grid " << kind << (solve_.mixed ? " F" : " D") << ") masses = " << solve_.masses
          << " iters = " << solve_.iterations;
     if (seconds > 0.0) out_ << " mflops = " << flops / (1.0e6 * seconds);
     out_ << " flops = " << flops << '\n';
     if (multishift && refreshing_ >= 0) refreshSolverSeconds_[refreshing_] += seconds;
     solve_.reported = true;
+    for (auto& [time, iters] : cleanups_) {
+      out_ << "CONGRAD5: time = " << time << " (Grid mixed cleanup D) masses = 1 iters = " << iters
+           << " mflops = " << 1146.0 * localVolume_ * iters / (1.0e6 * time)
+           << " flops = " << 1146.0 * localVolume_ * iters << '\n';
+    }
+    cleanups_.clear();
   }
   void iterations(int n) {
     if (solve_.converged) return;
@@ -171,6 +1286,7 @@ public:
       timerSection_.clear();
       gaugeActionCalls_ = 0; pendingGaugeSeconds_ = -1.0;
       gaugeSize_ = false;
+      mixedSolve_ = false; cleanups_.clear();
       if (trajectory_ >= warmupsEnd_) { finishWarmups(); }
     }
     static const std::regex refresh("refresh \\[([0-9]+)\\]\\[([0-9]+)\\]");
@@ -179,14 +1295,32 @@ public:
     if (text.find("Molecular Dynamics evolution") != std::string::npos) md_ = true;
     if (text.find("Compute final action") != std::string::npos) md_ = false;
 
-    static const std::regex shift("ConjugateGradientMultiShift: shift ([0-9]+) target resid");
+    static const std::regex shift("ConjugateGradientMultiShift(MixedPrecCleanup)?: shift ([0-9]+) target resid");
     if (std::regex_search(text, m, shift)) {
-      const int index = std::stoi(m[1]);
-      if (index == 0) solve_ = Solve{};
+      const int index = std::stoi(m[2]);
+      if (index == 0) { solve_ = Solve{}; solve_.mixed = mixedSolve_ = m[1].matched; }
       solve_.masses = std::max(solve_.masses, index + 1);
     }
-    static const std::regex multiDone("CGMultiShift: All shifts have converged iteration ([0-9]+)");
-    if (std::regex_search(text, m, multiDone)) iterations(std::stoi(m[1]));
+    static const std::regex multiDone(
+      "(CGMultiShift|ConjugateGradientMultiShiftMixedPrecCleanup): All shifts have converged iteration ([0-9]+)");
+    if (std::regex_search(text, m, multiDone)) iterations(std::stoi(m[2]));
+    if (mixedSolve_) {
+      static const std::regex inner(
+        "MixedPrecisionConjugateGradient: Inner CG iterations ([0-9]+) Restarts [0-9]+ Final CG iterations ([0-9]+)");
+      static const std::regex cleanup("MixedPrecisionConjugateGradient: Total time ([0-9.eE+-]+) s");
+      static const std::regex total("\\tSolver\\+Cleanup ([0-9.eE+-]+) s");
+      if (std::regex_search(text, m, inner)) {
+        cleanupIterations_ = std::stoi(m[1]) + std::stoi(m[2]);
+        totalIterations_ += cleanupIterations_;
+        if (md_) mdIterations_ += cleanupIterations_;
+      } else if (std::regex_search(text, m, cleanup)) {
+        cleanups_.emplace_back(std::stod(m[1]), cleanupIterations_);
+      } else if (std::regex_search(text, m, total)) {
+        mixedSolve_ = false;
+        cg(std::stod(m[1]), "multicg mixed", true);
+      }
+      return; // the cleanup's single-mass CG records belong to this solve
+    }
     if (text.find("ConjugageGradient::LogBegin") != std::string::npos ||
         text.find("ConjugateGradient::LogBegin") != std::string::npos) solve_ = Solve{};
     static const std::regex singleDone("ConjugateGradient Converged on iteration ([0-9]+)");
@@ -532,573 +1666,6 @@ public:
   }
 };
 
-////////////////////////////////////////////////////////////////
-// MILC's combined light/strange/regulator pseudofermion
-////////////////////////////////////////////////////////////////
-
-// det(Q_f)^(Flavors_f/4) by bare mass
-struct DeterminantFactor { RealD Mass; int Flavors; };
-
-MultiShiftFunction combinedRationalFunction(
-  const std::vector<DeterminantFactor>& factors,
-  const StaggeredRationalActionParams& params,
-  int invPow,
-  bool action,
-  bool inverse
-) {
-  const int degree = action ? params.action_degree : params.md_degree;
-  const RealD tolerance = action ? params.action_tolerance : params.md_tolerance;
-
-  std::vector<MultiShiftFunction> parts;
-  RealD norm = 1.0;
-  
-  for (auto& factor : factors) {
-    const RealD shift = 4.0 * factor.Mass * factor.Mass;
-    const int power = inverse ? -factor.Flavors : factor.Flavors;
-    
-    std::cout << GridLogMessage
-              << "Generating degree " << degree << " approximation for (x+" << shift
-              << ")^(" << power << "/" << invPow << ")" << std::endl;
-    
-    AlgRemez remez(params.lo + shift, params.hi + shift, params.precision);
-    
-    double error = remez.generateApprox(degree, std::abs(factor.Flavors), invPow);
-    if (error > tolerance) {
-      std::cout << GridLogMessage
-                << "WARNING: Remez approximation has a larger error "
-                << error << " than the CG tolerance " << tolerance
-                << "! Try increasing the number of poles" << std::endl;
-    }
-    
-    parts.emplace_back(remez, tolerance, power < 0);
-    norm *= parts.back().norm;
-    for (auto& pole : parts.back().poles) { pole += shift; }
-  }
-
-  std::vector<std::pair<RealD, RealD>> terms; // (pole, residue)
-  for (int f = 0; f < parts.size(); ++f) {
-    for (int k = 0; k < parts[f].poles.size(); ++k) {
-      const RealD pole = parts[f].poles[k];
-      RealD residue = parts[f].residues[k];
-      for (int g = 0; g < parts.size(); ++g) 
-      { if (g != f) { residue *= parts[g].approx(-pole); } }
-      terms.push_back({pole, residue});
-  } }
-  std::sort(terms.begin(), terms.end()); // smallest pole first for ConjugateGradientMultiShift
-
-  MultiShiftFunction combined(terms.size(), params.lo, params.hi);
-  combined.order = terms.size();
-  combined.norm = norm;
-  for (int i = 0; i < terms.size(); ++i) {
-    combined.poles[i] = terms[i].first;
-    combined.residues[i] = terms[i].second;
-    combined.tolerances[i] = tolerance;
-  }
-  return combined;
-}
-
-////////////////////////////////////////////////////////////////
-// Pseudofermion fields sharing one HISQ pullback per force
-////////////////////////////////////////////////////////////////
-
-// The HISQ configuration as seen by the fields' forces: pullbacks are recorded, summed
-// and returned as zero forces; everything else is the HISQ configuration's own
-class DeferredPullback : public ConfigurationBase<HMCWrapper::Field> {
-  typedef HMCWrapper::Field Field;
-
-  ConfigurationBase<Field>& _links;
-  mutable PrimalCotangentPairs<Field> _pending;
-
-public:
-  explicit DeferredPullback(ConfigurationBase<Field>& links): _links(links) {}
-
-  PrimalCotangentPairs<Field>& pending() { return _pending; }
-
-  void pullback(Field& UdSdU, PrimalCotangentPairs<Field>& dSdU) const override
-  { _pending += std::move(dSdU); UdSdU = Zero(); }
-
-  void set_Field(Field& U) override { _links.set_Field(U); }
-  void smeared_force(Field& UdSdU) override { _links.smeared_force(UdSdU); }
-  Field& get_SmearedU() override { return _links.get_SmearedU(); }
-  Field& get_U(bool smeared = false) override { return _links.get_U(smeared); }
-  void smear() override { _links.smear(); }
-  Primal<Field> primal(std::size_t id) const override { return _links.primal(id); }
-  const Field& fundamental() const override { return _links.fundamental(); }
-  const Field resolve(std::size_t id) const override { return _links.resolve(id); }
-};
-
-// MILC applies the HISQ chain rule once per force to the sum over all pseudofermions.
-// Grouping the fields into one action does the same: each field's force stops at its
-// cotangents (on the DeferredPullback), and their sum is pulled back once. Refresh and
-// action evaluations are those of the individual fields.
-class HISQPseudoFermions : public Action<HMCWrapper::Field> {
-  typedef HMCWrapper::Field Field;
-
-  std::vector<Action<Field>*> _fields;
-
-public:
-  using Action<Field>::Sinitial;
-
-  void push_back(Action<Field>* field) {
-    GRID_ASSERT(field->hasOptedIn() && "fields must use the HISQ link interface (signContract)");
-    _fields.push_back(field);
-  }
-
-  std::string action_name() override { return "HISQPseudoFermions"; }
-
-  std::string LogParameters() override {
-    std::string parameters;
-    for (auto* field : _fields) parameters += field->LogParameters();
-    return parameters;
-  }
-
-  // through the HISQ configuration only
-  void refresh(const Field&, GridSerialRNG&, GridParallelRNG&) override
-  { GRID_ASSERT(0 && "HISQPseudoFermions needs the HISQ configuration"); }
-  RealD S(const Field&) override
-  { GRID_ASSERT(0 && "HISQPseudoFermions needs the HISQ configuration"); return 0.0; }
-  void deriv(const Field&, Field&) override
-  { GRID_ASSERT(0 && "HISQPseudoFermions needs the HISQ configuration"); }
-
-  void refresh(ConfigurationBase<Field>& U, GridSerialRNG& sRNG, GridParallelRNG& pRNG) override
-  { for (auto* field : _fields) field->refresh(U, sRNG, pRNG); }
-
-  RealD S(ConfigurationBase<Field>& U) override { return sum(U, false); }
-  RealD Sinitial(ConfigurationBase<Field>& U) override { return sum(U, true); }
-
-  void deriv(ConfigurationBase<Field>& U, Field& UdSdU) override {
-    DeferredPullback deferred(U);
-    Field zero(UdSdU.Grid());
-    for (auto* field : _fields) field->deriv(deferred, zero); // cotangents only
-    U.pullback(UdSdU, deferred.pending());                     // one HISQ chain rule
-  }
-
-private:
-  RealD sum(ConfigurationBase<Field>& U, bool initial) {
-    RealD total = 0.0;
-    for (int i = 0; i < _fields.size(); ++i) {
-      const RealD term = initial ? _fields[i]->Sinitial(U) : _fields[i]->S(U);
-      std::cout << GridLogMessage << action_name() << " field " << i << " S = " << term << std::endl;
-      total += term;
-    }
-    return total;
-  }
-};
-
-////////////////////////////////////////////////////////////////
-// Serializable structs (for reading inputs)
-////////////////////////////////////////////////////////////////
-
-#define GRID_SERIALIZABLE(StructName, ...)                                        \
-  struct StructName: Serializable {                                               \
-    GRID_SERIALIZABLE_CLASS_MEMBERS(StructName, __VA_ARGS__);                     \
-    template <class ReaderClass>                                                  \
-    StructName(Reader<ReaderClass>& Reader) { read(Reader, #StructName, *this); } \
-  };
-
-GRID_SERIALIZABLE(InitializationParameters, std::string, StartType);
-
-GRID_SERIALIZABLE(
-  CheckpointParameters,
-  std::string, Format,
-  std::string, ConfigurationPrefix,
-  std::string, RandomNumberGeneratorPrefix,
-  int, SaveInterval
-);
-
-GRID_SERIALIZABLE(
-  RandomNumberGeneratorParameters,
-  std::string, SerialSeeds,
-  std::string, ParallelSeeds
-);
-
-GRID_SERIALIZABLE(
-  HamiltonianMonteCarloParameters,
-  int, NoMetropolisUntil,
-  
-  double, TrajectoryLength,
-  int, MolecularDynamicsSteps,
-  
-  int, FermionActionStepMultiplicity,
-  int, GaugeActionStepMultiplicity
-);
-
-GRID_SERIALIZABLE(
-  ActionParameters,
-  double, BareGaugeCoupling,
-  double, TadpoleFactor,
-  double, LightFermionMass,
-  double, StrangeFermionMass,
-  double, CharmFermionMass,
-  double, RegulatorFermionMass
-);
-
-GRID_SERIALIZABLE(
-  ConjugateGradientParameters,
-  double, ActionStoppingCondition,
-  double, ForceStoppingCondition,
-  int, MaxIterations
-);
-
-// MILC rationals file: lambda_low/lambda_high bound -D^2 for every pseudofermion;
-// each pseudofermion has its own order_MD (force) and order_GR = order_FA (heatbath, action)
-GRID_SERIALIZABLE(
-  RationalApproximationParameters,
-  double, LambdaLow,
-  double, LambdaHigh,
-  int, Precision,
-  int, LightStrangeActionDegree,
-  int, LightStrangeForceDegree,
-  int, RegulatorActionDegree,
-  int, RegulatorForceDegree,
-  int, CharmActionDegree,
-  int, CharmForceDegree
-);
-
-#undef GRID_SERIALIZABLE
-
-// Optional: without it the gauge observables are measured every trajectory
-struct ChiralCondensateParameters: Serializable {
-  GRID_SERIALIZABLE_CLASS_MEMBERS(
-    ChiralCondensateParameters,
-    double, Mass,
-    double, NaikEpsilon,
-    double, StoppingCondition,
-    int, MaxIterations
-  );
-};
-
-struct MeasurementParameters: Serializable {
-  GRID_SERIALIZABLE_CLASS_MEMBERS(
-    MeasurementParameters,
-    int, TrajectoriesBetweenMeasurements,
-    int, ChiralCondensateSources,
-    std::vector<ChiralCondensateParameters>, ChiralCondensate
-  );
-};
-
-////////////////////////////////////////////////////////////////
-// Input deck: the XML file, or MILC's input deck and rationals file
-////////////////////////////////////////////////////////////////
-
-// One pseudofermion: the Naik epsilon of its operator and its three rational functions of
-// -D^2, generated from the Remez settings in Params (XML) or read from MILC's rationals file
-struct FieldSpec {
-  RealD NaikEpsilon;
-  StaggeredRationalActionParams Params;
-  MultiShiftFunction HeatBath;
-  MultiShiftFunction Action;
-  MultiShiftFunction Deriv;
-  bool ActionIsNorm = false;
-};
-
-// MILC's measurements (ks_imp_rhmc control.c): after the warms, every traj_between_meas
-// trajectories, the gauge observables and then npbp_reps sources for each mass in order
-struct MeasurementSpec {
-  int Warmups = 0;
-  int Interval = 1;
-  int Sources = 1;
-  std::vector<ChiralCondensateParameters> Condensates;
-};
-
-struct Deck {
-  HMCparameters HMC;
-  CheckpointerParameters Checkpoint;
-  bool ILDGCheckpoint = false;        // else Nersc
-  RNGModuleParameters RNG;
-  int FermionStepMultiplicity;
-  int GaugeStepMultiplicity;
-  RealD BareGaugeCoupling;
-  RealD TadpoleFactor;
-  int SeaFlavors;                     // MILC's total_dyn_flavors in the one-loop coefficients
-  std::vector<FieldSpec> Fields;
-  MeasurementSpec Measurements;
-};
-
-Deck readXMLDeck(const std::string& file) {
-  Serialiser Reader(file, false, "grid");
-
-  InitializationParameters Initialization(Reader);
-  HamiltonianMonteCarloParameters HamiltonianMonteCarlo(Reader);
-  ActionParameters Action(Reader);
-  CheckpointParameters Checkpoint(Reader);
-  RandomNumberGeneratorParameters RandomNumberGenerator(Reader);
-  ConjugateGradientParameters CGParams(Reader);
-  RationalApproximationParameters RationalParams(Reader);
-
-  Deck deck;
-  deck.HMC.MD.MDsteps = HamiltonianMonteCarlo.MolecularDynamicsSteps;
-  deck.HMC.MD.trajL = HamiltonianMonteCarlo.TrajectoryLength;
-  deck.HMC.NoMetropolisUntil = HamiltonianMonteCarlo.NoMetropolisUntil;
-  deck.HMC.StartingType = Initialization.StartType;
-  deck.Checkpoint.config_prefix = Checkpoint.ConfigurationPrefix;
-  deck.Checkpoint.rng_prefix = Checkpoint.RandomNumberGeneratorPrefix;
-  deck.Checkpoint.saveInterval = Checkpoint.SaveInterval;
-  deck.Checkpoint.format = Checkpoint.Format;
-  deck.RNG.serial_seeds = RandomNumberGenerator.SerialSeeds;
-  deck.RNG.parallel_seeds = RandomNumberGenerator.ParallelSeeds;
-  deck.FermionStepMultiplicity = HamiltonianMonteCarlo.FermionActionStepMultiplicity;
-  deck.GaugeStepMultiplicity = HamiltonianMonteCarlo.GaugeActionStepMultiplicity;
-  deck.BareGaugeCoupling = Action.BareGaugeCoupling;
-  deck.TadpoleFactor = Action.TadpoleFactor;
-
-  // Grid's thermalization (NoMetropolisUntil) plays MILC's warms: the HMC skips it
-  MeasurementParameters Measurement;
-  Measurement.TrajectoriesBetweenMeasurements = 1;
-  Measurement.ChiralCondensateSources = 1;
-  read(Reader, "MeasurementParameters", Measurement);
-  deck.Measurements.Interval = Measurement.TrajectoriesBetweenMeasurements;
-  deck.Measurements.Sources = Measurement.ChiralCondensateSources;
-  deck.Measurements.Condensates = std::move(Measurement.ChiralCondensate);
-
-  // MILC's rationals file: bounds [lambda_low, lambda_high] on -D^2 for every pseudofermion,
-  // order_MD for the force and order_GR = order_FA for heatbath and action.
-  auto field = [&](
-    RealD epsilon,
-    const std::vector<DeterminantFactor>& factors,
-    int actionDegree,
-    int forceDegree
-  ) {
-    const StaggeredRationalActionParams params(
-      factors[0].Flavors,
-      RationalParams.LambdaLow,
-      RationalParams.LambdaHigh,
-      CGParams.MaxIterations,
-      CGParams.ActionStoppingCondition,
-      actionDegree,
-      CGParams.ForceStoppingCondition,
-      forceDegree,
-      RationalParams.Precision,
-      0
-    );
-    return FieldSpec{
-      epsilon, params,
-      combinedRationalFunction(factors, params, 8, true, false),
-      combinedRationalFunction(factors, params, 4, true, true),
-      combinedRationalFunction(factors, params, 4, false, true)
-    };
-  };
-
-  // Five pseudofermions as in MILC's in.m013m065m838 / rationals.sample.su3_rhmc_hisq_f211:
-  //   1    det(Q_l)^(2/4) det(Q_s)^(1/4) det(Q_r)^(-3/4), one rational function of -D^2
-  //   2-4  det(Q_r)^(1/4) each, cancelling the regulator denominator
-  //   5    det(Q_c)^(1/4) on the Naik-epsilon links (Eq. A6 uses the bare charm mass)
-  const RealD ml = Action.LightFermionMass;
-  const RealD ms = Action.StrangeFermionMass;
-  const RealD mr = Action.RegulatorFermionMass;
-  const RealD mc = Action.CharmFermionMass;
-  const FieldSpec lightStrange = field(
-    0.0, {{ml, 2}, {ms, 1}, {mr, -3}},
-    RationalParams.LightStrangeActionDegree, RationalParams.LightStrangeForceDegree
-  );
-  const FieldSpec regulator = field(
-    0.0, {{mr, 1}}, RationalParams.RegulatorActionDegree, RationalParams.RegulatorForceDegree
-  );
-  const FieldSpec charm = field(
-    calcNaikEpsilon(mc), {{mc, 1}},
-    RationalParams.CharmActionDegree, RationalParams.CharmForceDegree
-  );
-  deck.Fields = {lightStrange, regulator, regulator, regulator, charm};
-
-  // MILC's total_dyn_flavors: the sea quarks l, s, c; the regulator determinants cancel.
-  deck.SeaFlavors = 2 + 1 + 1;
-  return deck;
-}
-
-// MILC's ks_imp_rhmc input deck (setup.c, readin) and rationals file (load_rhmc_params.c):
-// "key value(s)" in a fixed order, "#" to the end of the line is a comment
-class MILCReader {
-public:
-  MILCReader(const std::string& file) {
-    std::cout << GridLogMessage << "Reading MILC input " << file << std::endl;
-    std::ifstream in(file);
-    GRID_ASSERT(in.is_open() && "cannot open MILC input");
-    std::string line;
-    while (std::getline(in, line)) {
-      std::istringstream ss(line.substr(0, line.find('#')));
-      std::string token;
-      while (ss >> token) { _tokens.push_back(token); }
-    }
-  }
-
-  std::string peek() const { return _pos < _tokens.size() ? _tokens[_pos] : ""; }
-
-  std::string word() {
-    GRID_ASSERT(_pos < _tokens.size() && "unexpected end of MILC input");
-    return _tokens[_pos++];
-  }
-
-  void expect(const std::string& key) {
-    const std::string got = word();
-    if (got != key) {
-      std::cout << GridLogError << "expected " << key << ", got " << got << std::endl;
-      GRID_ASSERT(0);
-    }
-  }
-
-  int integer(const std::string& key) { expect(key); return std::stoi(word()); }
-  RealD real(const std::string& key) { expect(key); return std::stod(word()); }
-
-  std::vector<RealD> reals(const std::string& key, int n) {
-    std::vector<RealD> values;
-    expect(key);
-    for (int i = 0; i < n; ++i) { values.push_back(std::stod(word())); }
-    return values;
-  }
-
-private:
-  std::vector<std::string> _tokens;
-  size_t _pos = 0;
-};
-
-// One function of the rationals file, prod_k (x + 4 m_k^2)^(y_k/z_k) as
-// res[0] + sum_k res[k]/(x + pole[k]) with pole[0] a dummy, in MILC's x = -D^2 on even sites
-MultiShiftFunction readMILCFunction(MILCReader& in, const std::string& tag, RealD tolerance) {
-  in.reals("y_" + tag, 4);
-  in.reals("z_" + tag, 4);
-  in.reals("m_" + tag, 4);
-  const int order = in.integer("order_" + tag);
-  MultiShiftFunction f(order, 0.0, 0.0);
-  f.order = order;
-  f.norm = in.real("res_" + tag);
-  for (auto& residue : f.residues) { residue = in.real("res_" + tag); }
-  in.real("pole_" + tag);
-  for (auto& pole : f.poles) { pole = in.real("pole_" + tag); }
-  f.tolerances.assign(order, tolerance);
-  return f;
-}
-
-Deck readMILCDeck(const std::string& file) {
-  MILCReader in(file);
-  Deck deck;
-
-  in.integer("prompt");
-  const Coordinate lattice(
-    {in.integer("nx"), in.integer("ny"), in.integer("nz"), in.integer("nt")}
-  );
-  GRID_ASSERT(lattice == GridDefaultLatt() && "--grid must match nx ny nz nt");
-  if (in.peek() == "node_geometry") { in.reals("node_geometry", 4); }
-  if (in.peek() == "ionode_geometry") { in.reals("ionode_geometry", 4); }
-  const int seed = in.integer("iseed");
-  deck.RNG.parallel_seeds = std::to_string(seed);   // MILC rng: iseed, serial {iseed, volume}
-  deck.RNG.serial_seeds = std::to_string(seed) + " " + std::to_string(
-    lattice[0] * lattice[1] * lattice[2] * lattice[3]
-  );
-  const int nPseudo = in.integer("n_pseudo");
-  in.expect("load_rhmc_params");
-  std::string rationals = in.word();
-  deck.BareGaugeCoupling = in.real("beta");
-  const int nDyn = in.integer("n_dyn_masses");
-  in.reals("dyn_mass", nDyn);
-  deck.SeaFlavors = 0;
-  for (RealD flavors : in.reals("dyn_flavors", nDyn)) { deck.SeaFlavors += flavors; }
-  deck.TadpoleFactor = in.real("u0");
-  deck.Measurements.Warmups = in.integer("warms");  // measurements follow the warms
-  deck.HMC.Trajectories = deck.Measurements.Warmups + in.integer("trajecs");
-  deck.HMC.NoMetropolisUntil = 0;                 // MILC's warms are Metropolis trajectories
-  deck.Measurements.Interval = in.integer("traj_between_meas");
-  const RealD timeStep = in.real("microcanonical_time_step");
-  const int milcSteps = in.integer("steps_per_trajectory");
-  GRID_ASSERT(milcSteps % 2 == 0 && "MILC 3G1F requires an even number of steps");
-  deck.HMC.MD.MDsteps = milcSteps / 2;              // complete Omelyan periods
-  deck.HMC.MD.trajL = timeStep * milcSteps;
-  deck.FermionStepMultiplicity = 1;                 // MILC's INT_3G1F
-  deck.GaugeStepMultiplicity = 3;
-
-  // the rationals file, relative to the working directory as in MILC, else to the deck
-  if (!std::ifstream(rationals) && file.rfind('/') != std::string::npos) {
-    rationals = file.substr(0, file.rfind('/') + 1) + rationals;
-  }
-  MILCReader rat(rationals);
-  GRID_ASSERT(rat.integer("n_pseudo") == nPseudo && "n_pseudo differs from rationals file");
-  for (int i = 0; i < nPseudo; ++i) {
-    // md, fa, gr: relative residuals
-    const std::vector<RealD> residual = in.reals("cgresid_md_fa_gr", 3);
-    const std::vector<RealD> iterations = in.reals("max_multicg_md_fa_gr", 3);
-    in.reals("cgprec_md_fa_gr", 3);                 // double precision throughout
-
-    FieldSpec field;
-    field.NaikEpsilon = rat.real("naik_term_epsilon");
-    // R = prod_f Q_f^(-Flavors_f/4): MD force; FA applies R^(1/2).
-    field.Deriv = readMILCFunction(rat, "MD", residual[0]);
-    field.HeatBath = readMILCFunction(rat, "GR", residual[2]); // R^(-1/2): heatbath
-    field.Action = readMILCFunction(rat, "FA", residual[1]);
-    field.ActionIsNorm = true;
-    field.Params = StaggeredRationalActionParams(
-      0,                                              // nf, lo, hi: logging only
-      0.0,
-      0.0,
-      std::max({iterations[0], iterations[1], iterations[2]}),
-      residual[1],
-      field.Action.order,
-      residual[0],
-      field.Deriv.order,
-      0,
-      0
-    );
-    deck.Fields.push_back(std::move(field));
-  }
-
-  in.integer("prec_ff");
-  const int nPbp = in.integer("number_of_pbp_masses");
-  int maxIterations = 0;
-  if (nPbp > 0) {
-    maxIterations = in.integer("max_cg_prop");      // per restart
-    maxIterations *= in.integer("max_cg_prop_restarts");
-    deck.Measurements.Sources = in.integer("npbp_reps");
-    in.integer("prec_pbp");                         // double precision throughout
-  }
-  for (int i = 0; i < nPbp; ++i) {
-    ChiralCondensateParameters condensate;
-    condensate.Mass = in.real("mass");
-    condensate.NaikEpsilon = in.real("naik_term_epsilon");
-    condensate.StoppingCondition = in.real("error_for_propagator");
-    condensate.MaxIterations = maxIterations;
-    if (in.real("rel_error_for_propagator") != 0.0) {
-      std::cout << GridLogWarning << "rel_error_for_propagator is not supported; "
-                << "pbp solves stop on error_for_propagator alone" << std::endl;
-    }
-    deck.Measurements.Condensates.push_back(condensate);
-  }
-
-  // Grid's checkpointer names lattices <prefix>.<trajectory>; a reloaded lattice must follow
-  // that, Grid cannot read MILC's native format (ILDG and SciDAC files are read by name)
-  auto ildg = [](const std::string& name) {
-    return name.find("ildg") != std::string::npos || name.find("scidac") != std::string::npos;
-  };
-
-  const std::regex trajectory("\\.([0-9]+)$");
-  std::string prefix;
-  const std::string start = in.word();
-  if (start == "fresh") { deck.HMC.StartingType = "ColdStart"; }
-  else if (start == "warm") { deck.HMC.StartingType = "TepidStart"; }
-  else if (start.rfind("reload_", 0) == 0) {
-    const std::string name = in.word();
-    std::smatch match;
-    GRID_ASSERT(std::regex_search(name, match, trajectory) &&
-                "reload needs <prefix>.<trajectory>");
-    prefix = match.prefix();
-    deck.HMC.StartingType = "CheckpointStart";
-    deck.HMC.StartTrajectory = std::stoi(match[1]);
-    deck.ILDGCheckpoint = ildg(name);
-  } else { GRID_ASSERT(0 && "starting lattice command not supported"); }
-
-  const std::string save = in.word();
-  if (save == "forget") { deck.Checkpoint.saveInterval = std::numeric_limits<int>::max(); }
-  else if (save.rfind("save_", 0) == 0) {
-    // MILC continues as reload lat.100, save lat.110: Grid appends the trajectory itself
-    prefix = std::regex_replace(in.word(), trajectory, "");
-    deck.ILDGCheckpoint = ildg(save);
-  } else { GRID_ASSERT(0 && "saving lattice command not supported"); }
-
-  deck.Checkpoint.config_prefix = prefix;
-  deck.Checkpoint.rng_prefix = prefix + ".rng";
-  return deck;
-}
-
-////////////////////////////////////////////////////////////////
-// MILC measurements: g_measure, then f_meas_imp_field per pbp mass
-////////////////////////////////////////////////////////////////
 
 class MILCGaugeAction: public PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction<Gimpl> {
   using Base = PeriodicPlaqPlusRectanglePlusParallelogramGaugeAction<Gimpl>;
@@ -1116,6 +1683,7 @@ public:
     return Base::S(U);
   }
 };
+
 
 class MILCMeasurements : public HmcObservable<HMCWrapper::Field> {
 public:
@@ -1307,84 +1875,7 @@ public:
   HmcObservable<HMCWrapper::Field>* getPtr() override { return &_measurements; }
 };
 
-////////////////////////////////////////////////////////////////
-// Main
-////////////////////////////////////////////////////////////////
 
-int main(int argc, char **argv) {
-  const double setupStart = usecond();
-  Grid_init(&argc, &argv);
-
-  ////////////////////////////////////////////////////////////////
-  // Input: --xml <file>, or --milc-input <deck> with MILC's input deck and rationals file
-  ////////////////////////////////////////////////////////////////
-  const bool milc = GridCmdOptionExists(argv, argv + argc, "--milc-input");
-  Deck deck = milc ? readMILCDeck(GridCmdOptionPayload(argv, argv + argc, "--milc-input"))
-                   : readXMLDeck(GridCmdOptionPayload(argv, argv + argc, "--xml"));
-
-  /////////////////////////////////////////////////////////////////
-  // Hamiltonian Monte Carlo wrapper
-  /////////////////////////////////////////////////////////////////
-  deck.HMC.MD.name = "InterleavedIntegrator";
-  HMCWrapper TheHMC(deck.HMC);
-
-  TheHMC.ReadCommandLine(argc, argv);
-  TheHMC.Resources.AddFourDimGrid("gauge");
-  if (deck.ILDGCheckpoint) { TheHMC.Resources.LoadILDGCheckpointer(deck.Checkpoint); }
-  else { TheHMC.Resources.LoadNerscCheckpointer(deck.Checkpoint); }
-  TheHMC.Resources.SetRNGSeeds(deck.RNG);
-
-  auto GridPtr   = TheHMC.Resources.GetCartesian();
-  auto GridRBPtr = TheHMC.Resources.GetRBCartesian();
-
-  ////////////////////////////////////////////////////////////////
-  // Fermion operators: one per Naik epsilon
-  ////////////////////////////////////////////////////////////////
-  std::vector<Complex> boundary = {1, 1, 1, -1};
-  StaggeredFermionOperator::ImplParams Params(boundary);
-  HISQConfiguration<HMCWrapper::ImplPolicy> Policy(GridPtr);
-
-  // Match MILC: M = 2m + Dslash, so double Grid's hopping coefficients. This also
-  // matches MILC pseudofermion normalization. As in MILC the operators are massless:
-  // the rational functions are of -D^2, with each bare mass in their poles as (2m)^2.
-  std::map<RealD, StaggeredFermionOperator> Operators;
-
-  ////////////////////////////////////////////////////////////////
-  // Full action
-  ////////////////////////////////////////////////////////////////
-  ActionLevel<HMCWrapper::Field> Level1(deck.FermionStepMultiplicity);
-  ActionLevel<HMCWrapper::Field> Level2(deck.GaugeStepMultiplicity);
-
-  std::deque<FermionAction> Fields;
-  HISQPseudoFermions Fermions; // all fields share one HISQ pullback per force
-  for (const auto& spec : deck.Fields) {
-    auto& Op = Operators.try_emplace(
-      spec.NaikEpsilon,
-      *GridPtr, *GridRBPtr, 0.0, 2.0, -(1.0 + spec.NaikEpsilon) / 12.0, 1.0, Params
-    ).first->second;
-    Fields.emplace_back(Op, spec.Params, spec.HeatBath, spec.Action, spec.Deriv, spec.ActionIsNorm);
-    Fields.back().signContract(Policy.promise(spec.NaikEpsilon));
-    Fermions.push_back(&Fields.back());
-  }
-  Level1.push_back(&Fermions);
-
-  // Eq. A2, beta = 10/g^2. Tadpole improvement is gauge-only.
-  const RealD u0 = deck.TadpoleFactor;
-  const int nf = deck.SeaFlavors;
-  MILCGaugeAction GaugeAction(
-    GridPtr,
-    deck.BareGaugeCoupling,
-    oneLoopMILCRectangleCoefficient(u0, nf), 
-    oneLoopMILCParallelogramCoefficient(u0, nf)
-  );
-  Level2.push_back(&GaugeAction);
-
-  TheHMC.TheAction.push_back(Level1);
-  TheHMC.TheAction.push_back(Level2);
-
-  //////////////////////////////////////////////////////////////
-  // Run HMC with HISQ smearing
-  //////////////////////////////////////////////////////////////
   const bool milcOutputMixed = GridCmdOptionExists(argv, argv + argc, "--milc-output-mixed");
   const bool milcOutput = milcOutputMixed || GridCmdOptionExists(argv, argv + argc, "--milc-output");
   
@@ -1448,104 +1939,4 @@ int main(int argc, char **argv) {
     }
     output.complete();
   }
-
-  Grid_finalize();
-}
-
-/* MILC input (pass as --milc-input <deck>, with --grid equal to nx ny nz nt): the ks_imp_rhmc deck
-   of su3_rhmc_hisq (ks_imp_rhmc/test/su3_rhmc_hisq.f211.1.sample-in) and the rationals file it
-   names in load_rhmc_params. Each pseudofermion uses the massless operator with the
-   naik_term_epsilon of the file; GR is the heatbath, MD the force, and FA the
-   half-power used to evaluate the action as |FA Phi|^2; cgresid_md_fa_gr are the
-   relative residuals of the multishift solves, max_multicg_md_fa_gr their iteration limits;
-   warms + trajecs trajectories with the Metropolis test throughout; MILC's
-   steps_per_trajectory/2 complete Omelyan periods of 2*microcanonical_time_step,
-   lambda = 0.2, and independent fermion/gauge multiplicities 1 and 3. XML counts
-   complete periods directly; TrajectoryLength/MolecularDynamicsSteps is their length;
-   iseed seeds the MILC rng (serial {iseed, volume}); dyn_flavors give the one-loop gauge
-   coefficients. fresh is ColdStart, warm TepidStart; reload_* needs a lattice named
-   <prefix>.<trajectory> that Grid's checkpointer can read (the ILDG checkpointer for names
-   containing ildg or scidac, MILC's native format cannot be read); save_* writes Grid's
-   checkpoints every trajectory under the given name, less any .<trajectory> ending, forget
-   writes nothing. One checkpointer both reads and writes, so a continuation keeps its prefix
-   (reload_serial lat.100, save_serial lat.110). After the warms, every traj_between_meas
-   trajectories print PLAQ and P_LOOP and, for each pbp mass in order, npbp_reps Gaussian
-   sources on all sites give PBP and FACTION, drawn from the parallel rng after the trajectory
-   as in MILC; each mass solves 2m + D on its naik_term_epsilon links to error_for_propagator
-   in at most max_cg_prop * max_cg_prop_restarts iterations (a nonzero
-   rel_error_for_propagator is ignored with a warning). cgprec_md_fa_gr, prec_ff and prec_pbp
-   are read and ignored (double precision throughout); continue is not supported.
-*/
-
-/* Example XML input file (pass as --xml <xml-file-name>.xml):
-   The masses, beta, and u0 are the a ~ 0.12 fm physical-mass ensemble in
-   Table IV of Phys. Rev. D 87, 054505. The regulator mass is 0.2 as in
-   Phys. Rev. D 82, 074501. Step counts are examples, not a reproduction of a MILC
-   production input deck; check them before use. The rational bounds, the regulator and
-   charm orders and the rng seeds follow in.m013m065m838 (1e-15, 90, orders 7/9). The
-   combined field approximates each of its three factors separately at the given degree
-   (3 x degree poles); its light factor x^(2/4) on [4 m_l^2, 90] reaches 1e-9 at degree 20
-   with 80 digits. With --enable-rng=milc the parallel rng takes one seed and the serial rng
-   {seed, volume} (4096 below is 8^4). MeasurementParameters is optional (the gauge
-   observables every trajectory, no condensate): measurements begin after the
-   NoMetropolisUntil trajectories, and each ChiralCondensate elem is one MILC pbp mass.
-<?xml version="1.0"?>
-<grid>
-  <InitializationParameters>
-    <StartType>TepidStart</StartType>
-  </InitializationParameters>
-  <HamiltonianMonteCarloParameters>
-    <NoMetropolisUntil>0</NoMetropolisUntil>
-    <TrajectoryLength>1.0</TrajectoryLength>
-    <MolecularDynamicsSteps>15</MolecularDynamicsSteps>
-    <FermionActionStepMultiplicity>1</FermionActionStepMultiplicity>
-    <GaugeActionStepMultiplicity>3</GaugeActionStepMultiplicity>
-  </HamiltonianMonteCarloParameters>
-  <ActionParameters>
-    <BareGaugeCoupling>6.0</BareGaugeCoupling>
-    <TadpoleFactor>0.86372</TadpoleFactor>
-    <LightFermionMass>0.00184</LightFermionMass>
-    <StrangeFermionMass>0.0507</StrangeFermionMass>
-    <CharmFermionMass>0.628</CharmFermionMass>
-    <RegulatorFermionMass>0.2</RegulatorFermionMass>
-  </ActionParameters>
-  <CheckpointParameters>
-    <Format>IEEE64BIG</Format>
-    <ConfigurationPrefix>ckpoint_hmc_lat</ConfigurationPrefix>
-    <RandomNumberGeneratorPrefix>ckpoint_hmc_rng</RandomNumberGeneratorPrefix>
-    <SaveInterval>1</SaveInterval>
-  </CheckpointParameters>
-  <RandomNumberGeneratorParameters>
-    <SerialSeeds>6 4096</SerialSeeds>
-    <ParallelSeeds>6</ParallelSeeds>
-  </RandomNumberGeneratorParameters>
-  <ConjugateGradientParameters>
-    <ActionStoppingCondition>1e-10</ActionStoppingCondition>
-    <ForceStoppingCondition>1e-8</ForceStoppingCondition>
-    <MaxIterations>10000</MaxIterations>
-  </ConjugateGradientParameters>
-  <RationalApproximationParameters>
-    <LambdaLow>1e-15</LambdaLow>
-    <LambdaHigh>90.0</LambdaHigh>
-    <Precision>80</Precision>
-    <LightStrangeActionDegree>20</LightStrangeActionDegree>
-    <LightStrangeForceDegree>16</LightStrangeForceDegree>
-    <RegulatorActionDegree>9</RegulatorActionDegree>
-    <RegulatorForceDegree>7</RegulatorForceDegree>
-    <CharmActionDegree>9</CharmActionDegree>
-    <CharmForceDegree>7</CharmForceDegree>
-  </RationalApproximationParameters>
-  <MeasurementParameters>
-    <TrajectoriesBetweenMeasurements>1</TrajectoriesBetweenMeasurements>
-    <ChiralCondensateSources>1</ChiralCondensateSources>
-    <ChiralCondensate>
-      <elem>
-        <Mass>0.00184</Mass>
-        <NaikEpsilon>0.0</NaikEpsilon>
-        <StoppingCondition>1e-8</StoppingCondition>
-        <MaxIterations>10000</MaxIterations>
-      </elem>
-    </ChiralCondensate>
-  </MeasurementParameters>
-</grid>
 */

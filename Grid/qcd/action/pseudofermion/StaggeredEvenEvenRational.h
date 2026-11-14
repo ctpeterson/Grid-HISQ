@@ -52,22 +52,23 @@ class StaggeredEvenEvenRational: public Action<typename Impl::GaugeField> {
  * pseudofermion action:
  * (1) S = Phi^dagger (M^dagger M)^(-Nf/4) Phi,
  * where Phi is defined on even sites only. Almost everything from the "four flavor"
- * class can be reused with minor modifications for the rooted case.
+ * class can be reused with minor modifications for the rooted case. As in MILC, the action
+ * is evaluated as the norm of (M^dagger M)^(-Nf/8) Phi, so the action rational approximates
+ * that half power (MILC's FA function).
  */
 public: 
   INHERIT_IMPL_TYPES(Impl);
 
 private:
   RealD _scale;
-  bool _actionNorm = false;
 
   StaggeredRationalActionParams _params;
   
   FermionOperator<Impl>& FermOp;
 
-  MultiShiftFunction OneEighthAction;
-  MultiShiftFunction NegOneQuarterAction;
-  MultiShiftFunction NegOneQuarterDeriv;
+  MultiShiftFunction OneEighthAction;    // heatbath, (M^dag M)^(Nf/8)
+  MultiShiftFunction NegOneEighthAction; // action, (M^dag M)^(-Nf/8)
+  MultiShiftFunction NegOneQuarterDeriv; // force, (M^dag M)^(-Nf/4)
 
   ActionContract<GaugeField> _contract;
 
@@ -115,7 +116,7 @@ public:
     Phi = Zero();
 
     _generateRemezApproximation(OneEighthAction, remez, 8, true, false);
-    _generateRemezApproximation(NegOneQuarterAction, remez, 4, true, true);
+    _generateRemezApproximation(NegOneEighthAction, remez, 8, true, true);
     _generateRemezApproximation(NegOneQuarterDeriv, remez, 4, false, true);
     
     std::cout << GridLogMessage 
@@ -127,15 +128,13 @@ public:
   StaggeredEvenEvenRational(
     FermionOperator<Impl>& Op,
     const StaggeredRationalActionParams& params,
-    const MultiShiftFunction& heatBath,
-    const MultiShiftFunction& action,
-    const MultiShiftFunction& deriv,
-    bool actionNorm = false // evaluate ||action(MdagM) Phi||^2 instead of Phi^dag action(MdagM) Phi
-  ):_actionNorm(actionNorm),
-    _params(params),
+    const MultiShiftFunction& heatBath, // (M^dag M)^(Nf/8)
+    const MultiShiftFunction& action,   // (M^dag M)^(-Nf/8)
+    const MultiShiftFunction& deriv     // (M^dag M)^(-Nf/4)
+  ):_params(params),
     FermOp(Op),
     OneEighthAction(heatBath),
-    NegOneQuarterAction(action),
+    NegOneEighthAction(action),
     NegOneQuarterDeriv(deriv),
     Phi(Op.FermionRedBlackGrid()) {
     _scale = std::sqrt(0.5);
@@ -182,27 +181,42 @@ public: // opt-in link interface: needs documentation
   void signContract(Primals<GaugeField> primals)
   { _contract = Action<GaugeField>::signContract(FermOp, primals); }
 
-private:
-  void _multiShiftSolve(
+public: // roles of the multi-shift solves (MILC's GR, FA and MD solves)
+  enum class SolveRole { HeatBath, Action, Force };
+
+protected:
+  /**
+   * @brief Multi-shift solves of M^dag M on the pseudofermion checkerboard
+   * @author Curtis Taylor Peterson
+   * @details
+   * The default solves in the precision of Impl. Derived classes can override these
+   * solves, e.g. to solve in mixed precision; role identifies the solve (heatbath, action
+   * or force) and maxIter is its iteration limit.
+   */
+  virtual void _multiShiftSolve(
+    SolveRole role,
+    int maxIter,
     const MultiShiftFunction& approx,
     const FermionField& in,
     std::vector<FermionField>& outs
   ) {
     SchurStaggeredOperator<FermionOperator<Impl>, FermionField> MdagM(FermOp);
-    ConjugateGradientMultiShift<FermionField> solver(_params.MaxIter, approx);
+    ConjugateGradientMultiShift<FermionField> solver(maxIter, approx);
     
     for (int i = 0; i < outs.size(); ++i) 
     { outs[i].Checkerboard() = in.Checkerboard(); }
     solver(MdagM, in, outs);
   }
 
-  void _multiShiftSolve(
+  virtual void _multiShiftSolve(
+    SolveRole role,
+    int maxIter,
     const MultiShiftFunction& approx,
     const FermionField& in,
     FermionField& out
   ) {
     SchurStaggeredOperator<FermionOperator<Impl>, FermionField> MdagM(FermOp);
-    ConjugateGradientMultiShift<FermionField> solver(_params.MaxIter, approx);
+    ConjugateGradientMultiShift<FermionField> solver(maxIter, approx);
     std::vector<FermionField> outs(approx.poles.size(), FermOp.FermionRedBlackGrid());
     
     for (int i = 0; i < outs.size(); ++i) 
@@ -230,7 +244,7 @@ private:
     EtaEven.Checkerboard() = Even;
     gaussian(pRNG, EtaEven); // Eqn (2)
     EtaEven *= _scale;
-    _multiShiftSolve(OneEighthAction, EtaEven, Phi); // Eqn (1)
+    _multiShiftSolve(SolveRole::HeatBath, _params.MaxIter, OneEighthAction, EtaEven, Phi); // Eqn (1)
   }
 
   RealD _action() {
@@ -239,17 +253,16 @@ private:
      * @author Curtis Taylor Peterson
      * @details
      * Computes the pseudofermion action S defined in Eqn (1) of the class
-     * documentation. The calculation is straightforward. Define
-     * (1) Psi = (M^dag M)^{-Nf/4} Phi
+     * documentation as MILC does. Define
+     * (1) Psi = (M^dag M)^{-Nf/8} Phi
      * and calculate S as
-     * (2) S = Phi^dagger Psi.
-     * With actionNorm enabled, the supplied rational approximates the square
-     * root of the action kernel instead, and S = ||Psi||^2.
+     * (2) S = Psi^dagger Psi,
+     * which equals Phi^dagger (M^dag M)^{-Nf/4} Phi.
      */
     FermionField Psi(FermOp.FermionRedBlackGrid());
     
-    _multiShiftSolve(NegOneQuarterAction, Phi, Psi); // Eqn (1)
-    return _actionNorm ? norm2(Psi) : innerProduct(Phi, Psi).real();
+    _multiShiftSolve(SolveRole::Action, _params.MaxIter, NegOneEighthAction, Phi, Psi); // Eqn (1)
+    return norm2(Psi); // Eqn (2)
   }
 
   template <class Derivative>
@@ -292,7 +305,7 @@ private:
     FermionField Chi(FermOp.FermionRedBlackGrid());
     FermionField minusPsi(FermOp.FermionRedBlackGrid());
 
-    _multiShiftSolve(NegOneQuarterDeriv, Phi, Psis); // Eqn (2a)***
+    _multiShiftSolve(SolveRole::Force, _params.MaxIter, NegOneQuarterDeriv, Phi, Psis); // Eqn (2a)***
 
     for (int i = 0; i < numPoles; ++i) {
       FermOp.Meooe(Psis[i], Chi); // Eqn (2b)***
