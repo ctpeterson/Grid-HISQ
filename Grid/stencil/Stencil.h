@@ -1413,7 +1413,7 @@ public:
 	  // Start comms now???
 	  ///////////////////////////////////////////////////////////
 	  int do_send = (comms_send) && (!shm_send );
-	  int do_recv = (comms_send) && (!shm_recv );
+	  int do_recv = (comms_recv) && (!shm_recv );
 	  AddPacket((void *)&send_buf[comm_off],
 		    (void *)&recv_buf[comm_off],
 		    xmit_to_rank, do_send,
