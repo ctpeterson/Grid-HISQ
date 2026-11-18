@@ -77,10 +77,10 @@ inline const typename x<Gimpl>::GaugeLinkField x<Gimpl> \
   std::vector<const typename GaugeLinkField::vector_object*> pointers;                          \
   int npairs = pairs.size();                                                                    \
   for (auto& pair : pairs) {                                                                    \
-    for (auto* field : {pair.first, pair.second}) {                                             \
-      views.push_back(field->View(AcceleratorRead));                                            \
-      pointers.push_back(&views.back()[0]);                                                     \
-    }                                                                                           \
+    views.push_back(pair.first->View(AcceleratorRead));                                         \
+    pointers.push_back(&views.back()[0]);                                                       \
+    views.push_back(pair.second->View(AcceleratorRead));                                        \
+    pointers.push_back(&views.back()[0]);                                                       \
   }                                                                                             \
   deviceVector<const typename GaugeLinkField::vector_object*> device(pointers.size());          \
   acceleratorCopyToDevice(pointers.data(), device.data(), pointers.size()*sizeof(pointers[0])); \
